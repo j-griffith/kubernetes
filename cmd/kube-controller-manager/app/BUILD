@@ -72,6 +72,7 @@ go_library(
         "//pkg/controller/volume/expand:go_default_library",
         "//pkg/controller/volume/persistentvolume:go_default_library",
         "//pkg/controller/volume/pvcprotection:go_default_library",
+        "//pkg/controller/volume/transfer:go_default_library",
         "//pkg/controller/volume/pvprotection:go_default_library",
         "//pkg/features:go_default_library",
         "//pkg/quota/v1/generic:go_default_library",
