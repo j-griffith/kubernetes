@@ -1523,7 +1523,8 @@ var supportedReclaimPolicy = sets.NewString(string(core.PersistentVolumeReclaimD
 var supportedVolumeModes = sets.NewString(string(core.PersistentVolumeBlock), string(core.PersistentVolumeFilesystem))
 
 var supportedDataSourceAPIGroupKinds = map[schema.GroupKind]bool{
-	{Group: "snapshot.storage.k8s.io", Kind: "VolumeSnapshot"}: true,
+	{Group: "snapshot.storage.k8s.io", Kind: "VolumeSnapshot"}:   true,
+	{Group: "populator.storage.k8s.io", Kind: "VolumePopulator"}: true,
 }
 
 func ValidatePersistentVolume(pv *core.PersistentVolume) field.ErrorList {
