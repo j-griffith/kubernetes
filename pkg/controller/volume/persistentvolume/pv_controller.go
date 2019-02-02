@@ -489,9 +489,8 @@ func (ctrl *PersistentVolumeController) syncBoundClaim(claim *v1.PersistentVolum
 			// NOTE: syncPV can handle this so it can be left out.
 			// NOTE: bind() call here will do nothing in most cases as
 			// everything should be already set.
-<<<<<<< HEAD
 
-			glog.V(4).Infof("synchronizing bound PersistentVolumeClaim[%s]: claim is already correctly bound", claimToClaimKey(claim))
+			klog.V(4).Infof("synchronizing bound PersistentVolumeClaim[%s]: claim is already correctly bound", claimToClaimKey(claim))
 			if err = ctrl.bind(volume, claim); err != nil {
 				// Objects not saved, next syncPV or syncClaim will try again
 				return err
@@ -502,14 +501,14 @@ func (ctrl *PersistentVolumeController) syncBoundClaim(claim *v1.PersistentVolum
 			// for POC we're just using annotations, for an actual impl we'd want to add attributes to the PVC object
 			// this would also help us for things like cancelling a transfer operation we decided we didn't want any longer
 			if transferRequest, ok := claim.Annotations["transfer-destination"]; ok {
-				glog.V(4).Infof("updating PV [%s] with transfer request: %s", volume.Name, transferRequest)
+				klog.V(4).Infof("updating PV [%s] with transfer request: %s", volume.Name, transferRequest)
 				volumeClone := volume.DeepCopy()
 				volumeClone.Annotations[annTransferStatus] = "pending"
 				volumeClone.Annotations[annTransferDestination] = transferRequest
 				volumeClone.Annotations[annOriginalClaim] = claim.GetName()
 				_, err := ctrl.kubeClient.CoreV1().PersistentVolumes().Update(volumeClone)
 				if err != nil {
-					glog.V(3).Infof("failed to process PVC transfer request: %v", err)
+					klog.V(3).Infof("failed to process PVC transfer request: %v", err)
 					return err
 				}
 				claimClone := claim.DeepCopy()
@@ -1117,7 +1116,7 @@ func (ctrl *PersistentVolumeController) processCompletedTransfer(volume *v1.Pers
 	volumeClone.Annotations[annTransferStatus] = "completed"
 	_, err := ctrl.kubeClient.CoreV1().PersistentVolumes().Update(volumeClone)
 	if err != nil {
-		glog.V(3).Infof("failed to finalize PVC transfer request: %v", err)
+		klog.V(3).Infof("failed to finalize PVC transfer request: %v", err)
 		return err
 	}
 	return nil
@@ -1127,7 +1126,7 @@ func (ctrl *PersistentVolumeController) processPendingTransfer(volume *v1.Persis
 	if dest, ok := volume.Annotations[annTransferDestination]; ok {
 		items := strings.Split(dest, "/")
 		if len(items) != 2 {
-			glog.V(3).Infof("invalid result from parsing transfer-destination, result was %d items, expected 2: %s", len(items), dest)
+			klog.V(3).Infof("invalid result from parsing transfer-destination, result was %d items, expected 2: %s", len(items), dest)
 			return fmt.Errorf("invalid format for transfer-destination: %s", dest)
 
 		}
@@ -1136,7 +1135,7 @@ func (ctrl *PersistentVolumeController) processPendingTransfer(volume *v1.Persis
 		volumeClone.Spec.ClaimRef.Name = items[1]
 		volumeClone.Spec.ClaimRef.UID = ""
 		if _, err := ctrl.kubeClient.CoreV1().PersistentVolumes().Update(volumeClone); err != nil {
-			glog.V(3).Infof("error updating PV: %v", err)
+			klog.V(3).Infof("error updating PV: %v", err)
 			return err
 		}
 		return nil
