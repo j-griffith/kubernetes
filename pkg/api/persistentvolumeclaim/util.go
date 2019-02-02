@@ -22,10 +22,34 @@ import (
 	"k8s.io/kubernetes/pkg/features"
 )
 
-// DropDisabledAlphaFields removes disabled fields from the pvc spec.
+// DropDisabledFields removes disabled fields from the pvc spec.
 // This should be called from PrepareForCreate/PrepareForUpdate for all resources containing a pvc spec.
-func DropDisabledAlphaFields(pvcSpec *core.PersistentVolumeClaimSpec) {
-	if !utilfeature.DefaultFeatureGate.Enabled(features.BlockVolume) {
+func DropDisabledFields(pvcSpec, oldPVCSpec *core.PersistentVolumeClaimSpec) {
+	if !utilfeature.DefaultFeatureGate.Enabled(features.BlockVolume) && !volumeModeInUse(oldPVCSpec) {
 		pvcSpec.VolumeMode = nil
 	}
+	// combine the old feature gate name (VolumeSnapshotDataSource) and the general VolumeDataSource feature gate into a single check
+	if !utilfeature.DefaultFeatureGate.Enabled(features.VolumeSnapshotDataSource) && !utilfeature.DefaultFeatureGate.Enabled(features.VolumeDataSource) && !dataSourceInUse(oldPVCSpec) {
+		pvcSpec.DataSource = nil
+	}
+}
+
+func volumeModeInUse(oldPVCSpec *core.PersistentVolumeClaimSpec) bool {
+	if oldPVCSpec == nil {
+		return false
+	}
+	if oldPVCSpec.VolumeMode != nil {
+		return true
+	}
+	return false
+}
+
+func dataSourceInUse(oldPVCSpec *core.PersistentVolumeClaimSpec) bool {
+	if oldPVCSpec == nil {
+		return false
+	}
+	if oldPVCSpec.DataSource != nil {
+		return true
+	}
+	return false
 }

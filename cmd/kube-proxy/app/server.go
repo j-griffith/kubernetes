@@ -28,8 +28,8 @@ import (
 	"strings"
 	"time"
 
-	"k8s.io/api/core/v1"
-	apimachineryconfig "k8s.io/apimachinery/pkg/apis/config"
+	v1 "k8s.io/api/core/v1"
+	v1meta "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
@@ -47,6 +47,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/client-go/tools/record"
+	componentbaseconfig "k8s.io/component-base/config"
 	"k8s.io/kube-proxy/config/v1alpha1"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/kubelet/qos"
@@ -72,10 +73,10 @@ import (
 	"k8s.io/utils/exec"
 	utilpointer "k8s.io/utils/pointer"
 
-	"github.com/golang/glog"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"k8s.io/klog"
 )
 
 const (
@@ -191,7 +192,7 @@ func NewOptions() *Options {
 // Complete completes all the required options.
 func (o *Options) Complete() error {
 	if len(o.ConfigFile) == 0 && len(o.WriteConfigTo) == 0 {
-		glog.Warning("WARNING: all flags other than --config, --write-config-to, and --cleanup are deprecated. Please begin using a config file ASAP.")
+		klog.Warning("WARNING: all flags other than --config, --write-config-to, and --cleanup are deprecated. Please begin using a config file ASAP.")
 		o.applyDeprecatedHealthzPortToConfig()
 	}
 
@@ -208,7 +209,7 @@ func (o *Options) Complete() error {
 		return err
 	}
 
-	if err := utilfeature.DefaultFeatureGate.SetFromMap(o.config.FeatureGates); err != nil {
+	if err := utilfeature.DefaultMutableFeatureGate.SetFromMap(o.config.FeatureGates); err != nil {
 		return err
 	}
 
@@ -280,7 +281,7 @@ func (o *Options) writeConfigFile() error {
 		return err
 	}
 
-	glog.Infof("Wrote configuration to: %s\n", o.WriteConfigTo)
+	klog.Infof("Wrote configuration to: %s\n", o.WriteConfigTo)
 
 	return nil
 }
@@ -365,23 +366,23 @@ with the apiserver API to configure the proxy.`,
 			utilflag.PrintFlags(cmd.Flags())
 
 			if err := initForOS(opts.WindowsService); err != nil {
-				glog.Fatalf("failed OS init: %v", err)
+				klog.Fatalf("failed OS init: %v", err)
 			}
 
 			if err := opts.Complete(); err != nil {
-				glog.Fatalf("failed complete: %v", err)
+				klog.Fatalf("failed complete: %v", err)
 			}
 			if err := opts.Validate(args); err != nil {
-				glog.Fatalf("failed validate: %v", err)
+				klog.Fatalf("failed validate: %v", err)
 			}
-			glog.Fatal(opts.Run())
+			klog.Fatal(opts.Run())
 		},
 	}
 
 	var err error
 	opts.config, err = opts.ApplyDefaults(opts.config)
 	if err != nil {
-		glog.Fatalf("unable to create flag defaults: %v", err)
+		klog.Fatalf("unable to create flag defaults: %v", err)
 	}
 
 	opts.AddFlags(cmd.Flags())
@@ -421,12 +422,12 @@ type ProxyServer struct {
 
 // createClients creates a kube client and an event client from the given config and masterOverride.
 // TODO remove masterOverride when CLI flags are removed.
-func createClients(config apimachineryconfig.ClientConnectionConfiguration, masterOverride string) (clientset.Interface, v1core.EventsGetter, error) {
+func createClients(config componentbaseconfig.ClientConnectionConfiguration, masterOverride string) (clientset.Interface, v1core.EventsGetter, error) {
 	var kubeConfig *rest.Config
 	var err error
 
 	if len(config.Kubeconfig) == 0 && len(masterOverride) == 0 {
-		glog.Info("Neither kubeconfig file nor master URL was specified. Falling back to in-cluster config.")
+		klog.Info("Neither kubeconfig file nor master URL was specified. Falling back to in-cluster config.")
 		kubeConfig, err = rest.InClusterConfig()
 	} else {
 		// This creates a client, first loading any specified kubeconfig
@@ -461,7 +462,7 @@ func createClients(config apimachineryconfig.ClientConnectionConfiguration, mast
 // Run runs the specified ProxyServer.  This should never exit (unless CleanupAndExit is set).
 func (s *ProxyServer) Run() error {
 	// To help debugging, immediately log version
-	glog.Infof("Version: %+v", version.Get())
+	klog.Infof("Version: %+v", version.Get())
 	// remove iptables rules and exit
 	if s.CleanupAndExit {
 		encounteredError := userspace.CleanupLeftovers(s.IptInterface)
@@ -478,16 +479,16 @@ func (s *ProxyServer) Run() error {
 	if s.OOMScoreAdj != nil {
 		oomAdjuster = oom.NewOOMAdjuster()
 		if err := oomAdjuster.ApplyOOMScoreAdj(0, int(*s.OOMScoreAdj)); err != nil {
-			glog.V(2).Info(err)
+			klog.V(2).Info(err)
 		}
 	}
 
 	if len(s.ResourceContainer) != 0 {
 		// Run in its own container.
 		if err := resourcecontainer.RunInResourceContainer(s.ResourceContainer); err != nil {
-			glog.Warningf("Failed to start in resource-only container %q: %v", s.ResourceContainer, err)
+			klog.Warningf("Failed to start in resource-only container %q: %v", s.ResourceContainer, err)
 		} else {
-			glog.V(2).Infof("Running in resource-only container %q", s.ResourceContainer)
+			klog.V(2).Infof("Running in resource-only container %q", s.ResourceContainer)
 		}
 	}
 
@@ -537,10 +538,11 @@ func (s *ProxyServer) Run() error {
 				// the only remediation we know is to restart the docker daemon.
 				// Here we'll send an node event with specific reason and message, the
 				// administrator should decide whether and how to handle this issue,
-				// whether to drain the node and restart docker.
+				// whether to drain the node and restart docker.  Occurs in other container runtimes
+				// as well.
 				// TODO(random-liu): Remove this when the docker bug is fixed.
-				const message = "DOCKER RESTART NEEDED (docker issue #24000): /sys is read-only: " +
-					"cannot modify conntrack limits, problems may arise later."
+				const message = "CRI error: /sys is read-only: " +
+					"cannot modify conntrack limits, problems may arise later (If running Docker, see docker issue #24000)"
 				s.Recorder.Eventf(s.NodeRef, api.EventTypeWarning, err.Error(), message)
 			}
 		}
@@ -560,7 +562,10 @@ func (s *ProxyServer) Run() error {
 		}
 	}
 
-	informerFactory := informers.NewSharedInformerFactory(s.Client, s.ConfigSyncPeriod)
+	informerFactory := informers.NewSharedInformerFactoryWithOptions(s.Client, s.ConfigSyncPeriod,
+		informers.WithTweakListOptions(func(options *v1meta.ListOptions) {
+			options.LabelSelector = "!service.kubernetes.io/service-proxy-name"
+		}))
 
 	// Create configs (i.e. Watches for Services and Endpoints)
 	// Note: RegisterHandler() calls need to happen before creation of Sources because sources
@@ -595,7 +600,7 @@ func getConntrackMax(config kubeproxyconfig.KubeProxyConntrackConfiguration) (in
 		if config.MaxPerCore != nil && *config.MaxPerCore > 0 {
 			return -1, fmt.Errorf("invalid config: Conntrack Max and Conntrack MaxPerCore are mutually exclusive")
 		}
-		glog.V(3).Infof("getConntrackMax: using absolute conntrack-max (deprecated)")
+		klog.V(3).Infof("getConntrackMax: using absolute conntrack-max (deprecated)")
 		return int(*config.Max), nil
 	}
 	if config.MaxPerCore != nil && *config.MaxPerCore > 0 {
@@ -605,10 +610,10 @@ func getConntrackMax(config kubeproxyconfig.KubeProxyConntrackConfiguration) (in
 		}
 		scaled := int(*config.MaxPerCore) * goruntime.NumCPU()
 		if scaled > floor {
-			glog.V(3).Infof("getConntrackMax: using scaled conntrack-max-per-core")
+			klog.V(3).Infof("getConntrackMax: using scaled conntrack-max-per-core")
 			return scaled, nil
 		}
-		glog.V(3).Infof("getConntrackMax: using conntrack-min")
+		klog.V(3).Infof("getConntrackMax: using conntrack-min")
 		return floor, nil
 	}
 	return 0, nil

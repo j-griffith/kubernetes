@@ -22,15 +22,13 @@ import (
 	"io"
 	"sync"
 
-	"github.com/golang/glog"
 	"k8s.io/apiserver/pkg/admission"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	cloudprovider "k8s.io/cloud-provider"
+	"k8s.io/klog"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/cloudprovider/providers/aws"
 	"k8s.io/kubernetes/pkg/cloudprovider/providers/azure"
 	"k8s.io/kubernetes/pkg/cloudprovider/providers/gce"
-	"k8s.io/kubernetes/pkg/features"
 	kubeapiserveradmission "k8s.io/kubernetes/pkg/kubeapiserver/admission"
 	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 	vol "k8s.io/kubernetes/pkg/volume"
@@ -58,7 +56,7 @@ type persistentVolumeLabel struct {
 	mutex            sync.Mutex
 	ebsVolumes       aws.Volumes
 	cloudConfig      []byte
-	gceCloudProvider *gce.GCECloud
+	gceCloudProvider *gce.Cloud
 	azureProvider    *azure.Cloud
 }
 
@@ -73,7 +71,7 @@ func newPersistentVolumeLabel() *persistentVolumeLabel {
 	// DEPRECATED: cloud-controller-manager will now start NewPersistentVolumeLabelController
 	// which does exactly what this admission controller used to do. So once GCE, AWS and AZURE can
 	// run externally, we can remove this admission controller.
-	glog.Warning("PersistentVolumeLabel admission controller is deprecated. " +
+	klog.Warning("PersistentVolumeLabel admission controller is deprecated. " +
 		"Please remove this controller from your configuration files and scripts.")
 	return &persistentVolumeLabel{
 		Handler: admission.NewHandler(admission.Create),
@@ -158,25 +156,23 @@ func (l *persistentVolumeLabel) Admit(a admission.Attributes) (err error) {
 			requirements = append(requirements, api.NodeSelectorRequirement{Key: k, Operator: api.NodeSelectorOpIn, Values: values})
 		}
 
-		if utilfeature.DefaultFeatureGate.Enabled(features.VolumeScheduling) {
-			if volume.Spec.NodeAffinity == nil {
-				volume.Spec.NodeAffinity = new(api.VolumeNodeAffinity)
-			}
-			if volume.Spec.NodeAffinity.Required == nil {
-				volume.Spec.NodeAffinity.Required = new(api.NodeSelector)
-			}
-			if len(volume.Spec.NodeAffinity.Required.NodeSelectorTerms) == 0 {
-				// Need at least one term pre-allocated whose MatchExpressions can be appended to
-				volume.Spec.NodeAffinity.Required.NodeSelectorTerms = make([]api.NodeSelectorTerm, 1)
-			}
-			if nodeSelectorRequirementKeysExistInNodeSelectorTerms(requirements, volume.Spec.NodeAffinity.Required.NodeSelectorTerms) {
-				glog.V(4).Infof("NodeSelectorRequirements for cloud labels %v conflict with existing NodeAffinity %v. Skipping addition of NodeSelectorRequirements for cloud labels.",
-					requirements, volume.Spec.NodeAffinity)
-			} else {
-				for _, req := range requirements {
-					for i := range volume.Spec.NodeAffinity.Required.NodeSelectorTerms {
-						volume.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions = append(volume.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions, req)
-					}
+		if volume.Spec.NodeAffinity == nil {
+			volume.Spec.NodeAffinity = new(api.VolumeNodeAffinity)
+		}
+		if volume.Spec.NodeAffinity.Required == nil {
+			volume.Spec.NodeAffinity.Required = new(api.NodeSelector)
+		}
+		if len(volume.Spec.NodeAffinity.Required.NodeSelectorTerms) == 0 {
+			// Need at least one term pre-allocated whose MatchExpressions can be appended to
+			volume.Spec.NodeAffinity.Required.NodeSelectorTerms = make([]api.NodeSelectorTerm, 1)
+		}
+		if nodeSelectorRequirementKeysExistInNodeSelectorTerms(requirements, volume.Spec.NodeAffinity.Required.NodeSelectorTerms) {
+			klog.V(4).Infof("NodeSelectorRequirements for cloud labels %v conflict with existing NodeAffinity %v. Skipping addition of NodeSelectorRequirements for cloud labels.",
+				requirements, volume.Spec.NodeAffinity)
+		} else {
+			for _, req := range requirements {
+				for i := range volume.Spec.NodeAffinity.Required.NodeSelectorTerms {
+					volume.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions = append(volume.Spec.NodeAffinity.Required.NodeSelectorTerms[i].MatchExpressions, req)
 				}
 			}
 		}
@@ -259,7 +255,7 @@ func (l *persistentVolumeLabel) findGCEPDLabels(volume *api.PersistentVolume) (m
 }
 
 // getGCECloudProvider returns the GCE cloud provider, for use for querying volume labels
-func (l *persistentVolumeLabel) getGCECloudProvider() (*gce.GCECloud, error) {
+func (l *persistentVolumeLabel) getGCECloudProvider() (*gce.Cloud, error) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
@@ -272,7 +268,7 @@ func (l *persistentVolumeLabel) getGCECloudProvider() (*gce.GCECloud, error) {
 		if err != nil || cloudProvider == nil {
 			return nil, err
 		}
-		gceCloudProvider, ok := cloudProvider.(*gce.GCECloud)
+		gceCloudProvider, ok := cloudProvider.(*gce.Cloud)
 		if !ok {
 			// GetCloudProvider has gone very wrong
 			return nil, fmt.Errorf("error retrieving GCE cloud provider")

@@ -1,14 +1,13 @@
 approvers:
-- api-approvers
 - deads2k
 - luxas
 - mtaufen
 - sttts
 - stewart-yu
 reviewers:
-- api-reviewers
 - deads2k
 - luxas
 - mtaufen
 - sttts
 - stewart-yu
+- cheftako

@@ -32,6 +32,7 @@ go_test(
         "//test/e2e/servicecatalog:go_default_library",
         "//test/e2e/storage:go_default_library",
         "//test/e2e/ui:go_default_library",
+        "//test/e2e/windows:go_default_library",
     ],
 )
 
@@ -68,11 +69,11 @@ go_library(
         "//test/e2e/framework/testfiles:go_default_library",
         "//test/e2e/manifest:go_default_library",
         "//test/utils:go_default_library",
-        "//vendor/github.com/golang/glog:go_default_library",
         "//vendor/github.com/onsi/ginkgo:go_default_library",
         "//vendor/github.com/onsi/ginkgo/config:go_default_library",
         "//vendor/github.com/onsi/ginkgo/reporters:go_default_library",
         "//vendor/github.com/onsi/gomega:go_default_library",
+        "//vendor/k8s.io/klog:go_default_library",
     ],
 )
 
@@ -120,6 +121,7 @@ filegroup(
         "//test/e2e/testing-manifests:all-srcs",
         "//test/e2e/ui:all-srcs",
         "//test/e2e/upgrades:all-srcs",
+        "//test/e2e/windows:all-srcs",
     ],
     tags = ["automanaged"],
 )

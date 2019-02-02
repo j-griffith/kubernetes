@@ -201,6 +201,10 @@ func (f *fakeVolumeHost) GetServiceAccountTokenFunc() func(string, string, *auth
 	}
 }
 
+func (f *fakeVolumeHost) DeleteServiceAccountTokenFunc() func(types.UID) {
+	return func(types.UID) {}
+}
+
 func (f *fakeVolumeHost) GetNodeLabels() (map[string]string, error) {
 	if f.nodeLabels == nil {
 		f.nodeLabels = map[string]string{"test-label": "test-value"}
@@ -246,6 +250,10 @@ type FakeVolumePlugin struct {
 	LimitKey               string
 	ProvisionDelaySeconds  int
 
+	// Add callbacks as needed
+	WaitForAttachHook func(spec *Spec, devicePath string, pod *v1.Pod, spectimeout time.Duration) (string, error)
+	UnmountDeviceHook func(globalMountPath string) error
+
 	Mounters             []*FakeVolume
 	Unmounters           []*FakeVolume
 	Attachers            []*FakeVolume
@@ -262,9 +270,13 @@ var _ ProvisionableVolumePlugin = &FakeVolumePlugin{}
 var _ AttachableVolumePlugin = &FakeVolumePlugin{}
 var _ VolumePluginWithAttachLimits = &FakeVolumePlugin{}
 var _ DeviceMountableVolumePlugin = &FakeVolumePlugin{}
+var _ FSResizableVolumePlugin = &FakeVolumePlugin{}
 
 func (plugin *FakeVolumePlugin) getFakeVolume(list *[]*FakeVolume) *FakeVolume {
-	volume := &FakeVolume{}
+	volume := &FakeVolume{
+		WaitForAttachHook: plugin.WaitForAttachHook,
+		UnmountDeviceHook: plugin.UnmountDeviceHook,
+	}
 	*list = append(*list, volume)
 	return volume
 }
@@ -480,6 +492,10 @@ func (plugin *FakeVolumePlugin) RequiresFSResize() bool {
 	return true
 }
 
+func (plugin *FakeVolumePlugin) ExpandFS(spec *Spec, devicePath, deviceMountPath string, _, _ resource.Quantity) error {
+	return nil
+}
+
 func (plugin *FakeVolumePlugin) GetVolumeLimits() (map[string]int64, error) {
 	return plugin.VolumeLimits, plugin.VolumeLimitsError
 }
@@ -487,6 +503,94 @@ func (plugin *FakeVolumePlugin) GetVolumeLimits() (map[string]int64, error) {
 func (plugin *FakeVolumePlugin) VolumeLimitKey(spec *Spec) string {
 	return plugin.LimitKey
 }
+
+// FakeBasicVolumePlugin implements a basic volume plugin. It wrappers on
+// FakeVolumePlugin but implements VolumePlugin interface only.
+// It is useful to test logic involving plugin interfaces.
+type FakeBasicVolumePlugin struct {
+	Plugin FakeVolumePlugin
+}
+
+func (f *FakeBasicVolumePlugin) GetPluginName() string {
+	return f.Plugin.GetPluginName()
+}
+
+func (f *FakeBasicVolumePlugin) GetVolumeName(spec *Spec) (string, error) {
+	return f.Plugin.GetVolumeName(spec)
+}
+
+// CanSupport tests whether the plugin supports a given volume specification by
+// testing volume spec name begins with plugin name or not.
+// This is useful to choose plugin by volume in testing.
+func (f *FakeBasicVolumePlugin) CanSupport(spec *Spec) bool {
+	return strings.HasPrefix(spec.Name(), f.GetPluginName())
+}
+
+func (f *FakeBasicVolumePlugin) ConstructVolumeSpec(ame, mountPath string) (*Spec, error) {
+	return f.Plugin.ConstructVolumeSpec(ame, mountPath)
+}
+
+func (f *FakeBasicVolumePlugin) Init(ost VolumeHost) error {
+	return f.Plugin.Init(ost)
+}
+
+func (f *FakeBasicVolumePlugin) NewMounter(spec *Spec, pod *v1.Pod, opts VolumeOptions) (Mounter, error) {
+	return f.Plugin.NewMounter(spec, pod, opts)
+}
+
+func (f *FakeBasicVolumePlugin) NewUnmounter(volName string, podUID types.UID) (Unmounter, error) {
+	return f.Plugin.NewUnmounter(volName, podUID)
+}
+
+func (f *FakeBasicVolumePlugin) RequiresRemount() bool {
+	return f.Plugin.RequiresRemount()
+}
+
+func (f *FakeBasicVolumePlugin) SupportsBulkVolumeVerification() bool {
+	return f.Plugin.SupportsBulkVolumeVerification()
+}
+
+func (f *FakeBasicVolumePlugin) SupportsMountOption() bool {
+	return f.Plugin.SupportsMountOption()
+}
+
+var _ VolumePlugin = &FakeBasicVolumePlugin{}
+
+// FakeDeviceMountableVolumePlugin implements an device mountable plugin based on FakeBasicVolumePlugin.
+type FakeDeviceMountableVolumePlugin struct {
+	FakeBasicVolumePlugin
+}
+
+func (f *FakeDeviceMountableVolumePlugin) NewDeviceMounter() (DeviceMounter, error) {
+	return f.Plugin.NewDeviceMounter()
+}
+
+func (f *FakeDeviceMountableVolumePlugin) NewDeviceUnmounter() (DeviceUnmounter, error) {
+	return f.Plugin.NewDeviceUnmounter()
+}
+
+func (f *FakeDeviceMountableVolumePlugin) GetDeviceMountRefs(deviceMountPath string) ([]string, error) {
+	return f.Plugin.GetDeviceMountRefs(deviceMountPath)
+}
+
+var _ VolumePlugin = &FakeDeviceMountableVolumePlugin{}
+var _ DeviceMountableVolumePlugin = &FakeDeviceMountableVolumePlugin{}
+
+// FakeAttachableVolumePlugin implements an attachable plugin based on FakeDeviceMountableVolumePlugin.
+type FakeAttachableVolumePlugin struct {
+	FakeDeviceMountableVolumePlugin
+}
+
+func (f *FakeAttachableVolumePlugin) NewAttacher() (Attacher, error) {
+	return f.Plugin.NewAttacher()
+}
+
+func (f *FakeAttachableVolumePlugin) NewDetacher() (Detacher, error) {
+	return f.Plugin.NewDetacher()
+}
+
+var _ VolumePlugin = &FakeAttachableVolumePlugin{}
+var _ AttachableVolumePlugin = &FakeAttachableVolumePlugin{}
 
 type FakeFileVolumePlugin struct {
 }
@@ -541,6 +645,10 @@ type FakeVolume struct {
 	VolName string
 	Plugin  *FakeVolumePlugin
 	MetricsNil
+
+	// Add callbacks as needed
+	WaitForAttachHook func(spec *Spec, devicePath string, pod *v1.Pod, spectimeout time.Duration) (string, error)
+	UnmountDeviceHook func(globalMountPath string) error
 
 	SetUpCallCount              int
 	TearDownCallCount           int
@@ -715,6 +823,9 @@ func (fv *FakeVolume) WaitForAttach(spec *Spec, devicePath string, pod *v1.Pod, 
 	fv.Lock()
 	defer fv.Unlock()
 	fv.WaitForAttachCallCount++
+	if fv.WaitForAttachHook != nil {
+		return fv.WaitForAttachHook(spec, devicePath, pod, spectimeout)
+	}
 	return "/dev/sdb", nil
 }
 
@@ -767,6 +878,9 @@ func (fv *FakeVolume) UnmountDevice(globalMountPath string) error {
 	fv.Lock()
 	defer fv.Unlock()
 	fv.UnmountDeviceCallCount++
+	if fv.UnmountDeviceHook != nil {
+		return fv.UnmountDeviceHook(globalMountPath)
+	}
 	return nil
 }
 

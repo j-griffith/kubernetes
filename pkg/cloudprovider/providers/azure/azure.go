@@ -41,23 +41,27 @@ import (
 
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
-	"github.com/ghodss/yaml"
-	"github.com/golang/glog"
+	"k8s.io/klog"
+	"sigs.k8s.io/yaml"
 )
 
 const (
 	// CloudProviderName is the value used for the --cloud-provider flag
-	CloudProviderName            = "azure"
-	rateLimitQPSDefault          = 1.0
-	rateLimitBucketDefault       = 5
-	backoffRetriesDefault        = 6
-	backoffExponentDefault       = 1.5
-	backoffDurationDefault       = 5 // in seconds
-	backoffJitterDefault         = 1.0
-	maximumLoadBalancerRuleCount = 148 // According to Azure LB rule default limit
+	CloudProviderName      = "azure"
+	rateLimitQPSDefault    = 1.0
+	rateLimitBucketDefault = 5
+	backoffRetriesDefault  = 6
+	backoffExponentDefault = 1.5
+	backoffDurationDefault = 5 // in seconds
+	backoffJitterDefault   = 1.0
+	// According to https://docs.microsoft.com/en-us/azure/azure-subscription-service-limits#load-balancer.
+	maximumLoadBalancerRuleCount = 250
 
 	vmTypeVMSS     = "vmss"
 	vmTypeStandard = "standard"
+
+	backoffModeDefault = "default"
+	backoffModeV2      = "v2"
 
 	loadBalancerSkuBasic    = "basic"
 	loadBalancerSkuStandard = "standard"
@@ -70,9 +74,6 @@ var (
 	// Master nodes are not added to standard load balancer by default.
 	defaultExcludeMasterFromStandardLB = true
 )
-
-// Azure implements PVLabeler.
-var _ cloudprovider.PVLabeler = (*Cloud)(nil)
 
 // Config holds the configuration parsed from the --cloud-config flag
 // All fields are required unless otherwise specified
@@ -118,6 +119,12 @@ type Config struct {
 	CloudProviderBackoffDuration int `json:"cloudProviderBackoffDuration" yaml:"cloudProviderBackoffDuration"`
 	// Backoff jitter
 	CloudProviderBackoffJitter float64 `json:"cloudProviderBackoffJitter" yaml:"cloudProviderBackoffJitter"`
+	// Backoff mode, options are v2 and default.
+	// * default means two-layer backoff retrying, one in the cloud provider and the other in the Azure SDK.
+	// * v2 means only backoff in the Azure SDK is used. In such mode, CloudProviderBackoffDuration and
+	//   CloudProviderBackoffJitter are omitted.
+	// "default" will be used if not specified.
+	CloudProviderBackoffMode string `json:"cloudProviderBackoffMode" yaml:"cloudProviderBackoffMode"`
 	// Enable rate limiting
 	CloudProviderRateLimit bool `json:"cloudProviderRateLimit" yaml:"cloudProviderRateLimit"`
 	// Rate limit QPS (Read)
@@ -143,6 +150,13 @@ type Config struct {
 	MaximumLoadBalancerRuleCount int `json:"maximumLoadBalancerRuleCount" yaml:"maximumLoadBalancerRuleCount"`
 }
 
+var _ cloudprovider.Interface = (*Cloud)(nil)
+var _ cloudprovider.Instances = (*Cloud)(nil)
+var _ cloudprovider.LoadBalancer = (*Cloud)(nil)
+var _ cloudprovider.Routes = (*Cloud)(nil)
+var _ cloudprovider.Zones = (*Cloud)(nil)
+var _ cloudprovider.PVLabeler = (*Cloud)(nil)
+
 // Cloud holds the config and clients
 type Cloud struct {
 	Config
@@ -159,7 +173,7 @@ type Cloud struct {
 	DisksClient             DisksClient
 	FileClient              FileClient
 	resourceRequestBackoff  wait.Backoff
-	metadata                *InstanceMetadata
+	metadata                *InstanceMetadataService
 	vmSet                   VMSet
 
 	// Lock for access to node caches, includes nodeZones, nodeResourceGroups, and unmanagedNodes.
@@ -255,13 +269,55 @@ func NewCloud(configReader io.Reader) (cloudprovider.Interface, error) {
 			config.CloudProviderRateLimitQPSWrite,
 			config.CloudProviderRateLimitBucketWrite)
 
-		glog.V(2).Infof("Azure cloudprovider (read ops) using rate limit config: QPS=%g, bucket=%d",
+		klog.V(2).Infof("Azure cloudprovider (read ops) using rate limit config: QPS=%g, bucket=%d",
 			config.CloudProviderRateLimitQPS,
 			config.CloudProviderRateLimitBucket)
 
-		glog.V(2).Infof("Azure cloudprovider (write ops) using rate limit config: QPS=%g, bucket=%d",
+		klog.V(2).Infof("Azure cloudprovider (write ops) using rate limit config: QPS=%g, bucket=%d",
 			config.CloudProviderRateLimitQPSWrite,
 			config.CloudProviderRateLimitBucketWrite)
+	}
+
+	// Conditionally configure resource request backoff
+	resourceRequestBackoff := wait.Backoff{
+		Steps: 1,
+	}
+	if config.CloudProviderBackoff {
+		// Assign backoff defaults if no configuration was passed in
+		if config.CloudProviderBackoffRetries == 0 {
+			config.CloudProviderBackoffRetries = backoffRetriesDefault
+		}
+		if config.CloudProviderBackoffDuration == 0 {
+			config.CloudProviderBackoffDuration = backoffDurationDefault
+		}
+		if config.CloudProviderBackoffExponent == 0 {
+			config.CloudProviderBackoffExponent = backoffExponentDefault
+		} else if config.shouldOmitCloudProviderBackoff() {
+			klog.Warning("Azure cloud provider config 'cloudProviderBackoffExponent' has been deprecated for 'v2' backoff mode. 2 is always used as the backoff exponent.")
+		}
+		if config.CloudProviderBackoffJitter == 0 {
+			config.CloudProviderBackoffJitter = backoffJitterDefault
+		} else if config.shouldOmitCloudProviderBackoff() {
+			klog.Warning("Azure cloud provider config 'cloudProviderBackoffJitter' has been deprecated for 'v2' backoff mode.")
+		}
+
+		if !config.shouldOmitCloudProviderBackoff() {
+			resourceRequestBackoff = wait.Backoff{
+				Steps:    config.CloudProviderBackoffRetries,
+				Factor:   config.CloudProviderBackoffExponent,
+				Duration: time.Duration(config.CloudProviderBackoffDuration) * time.Second,
+				Jitter:   config.CloudProviderBackoffJitter,
+			}
+		}
+		klog.V(2).Infof("Azure cloudprovider using try backoff: retries=%d, exponent=%f, duration=%d, jitter=%f",
+			config.CloudProviderBackoffRetries,
+			config.CloudProviderBackoffExponent,
+			config.CloudProviderBackoffDuration,
+			config.CloudProviderBackoffJitter)
+	} else {
+		// CloudProviderBackoffRetries will be set to 1 by default as the requirements of Azure SDK.
+		config.CloudProviderBackoffRetries = 1
+		config.CloudProviderBackoffDuration = backoffDurationDefault
 	}
 
 	// Do not add master nodes to standard LB by default.
@@ -270,19 +326,23 @@ func NewCloud(configReader io.Reader) (cloudprovider.Interface, error) {
 	}
 
 	azClientConfig := &azClientConfig{
-		subscriptionID:          config.SubscriptionID,
-		resourceManagerEndpoint: env.ResourceManagerEndpoint,
-		servicePrincipalToken:   servicePrincipalToken,
-		rateLimiterReader:       operationPollRateLimiter,
-		rateLimiterWriter:       operationPollRateLimiterWrite,
+		subscriptionID:                 config.SubscriptionID,
+		resourceManagerEndpoint:        env.ResourceManagerEndpoint,
+		servicePrincipalToken:          servicePrincipalToken,
+		rateLimiterReader:              operationPollRateLimiter,
+		rateLimiterWriter:              operationPollRateLimiterWrite,
+		CloudProviderBackoffRetries:    config.CloudProviderBackoffRetries,
+		CloudProviderBackoffDuration:   config.CloudProviderBackoffDuration,
+		ShouldOmitCloudProviderBackoff: config.shouldOmitCloudProviderBackoff(),
 	}
 	az := Cloud{
-		Config:             *config,
-		Environment:        *env,
-		nodeZones:          map[string]sets.String{},
-		nodeResourceGroups: map[string]string{},
-		unmanagedNodes:     sets.NewString(),
-		routeCIDRs:         map[string]string{},
+		Config:                 *config,
+		Environment:            *env,
+		nodeZones:              map[string]sets.String{},
+		nodeResourceGroups:     map[string]string{},
+		unmanagedNodes:         sets.NewString(),
+		routeCIDRs:             map[string]string{},
+		resourceRequestBackoff: resourceRequestBackoff,
 
 		DisksClient:                     newAzDisksClient(azClientConfig),
 		RoutesClient:                    newAzRoutesClient(azClientConfig),
@@ -300,35 +360,10 @@ func NewCloud(configReader io.Reader) (cloudprovider.Interface, error) {
 		FileClient:                      &azureFileClient{env: *env},
 	}
 
-	// Conditionally configure resource request backoff
-	if az.CloudProviderBackoff {
-		// Assign backoff defaults if no configuration was passed in
-		if az.CloudProviderBackoffRetries == 0 {
-			az.CloudProviderBackoffRetries = backoffRetriesDefault
-		}
-		if az.CloudProviderBackoffExponent == 0 {
-			az.CloudProviderBackoffExponent = backoffExponentDefault
-		}
-		if az.CloudProviderBackoffDuration == 0 {
-			az.CloudProviderBackoffDuration = backoffDurationDefault
-		}
-		if az.CloudProviderBackoffJitter == 0 {
-			az.CloudProviderBackoffJitter = backoffJitterDefault
-		}
-		az.resourceRequestBackoff = wait.Backoff{
-			Steps:    az.CloudProviderBackoffRetries,
-			Factor:   az.CloudProviderBackoffExponent,
-			Duration: time.Duration(az.CloudProviderBackoffDuration) * time.Second,
-			Jitter:   az.CloudProviderBackoffJitter,
-		}
-		glog.V(2).Infof("Azure cloudprovider using try backoff: retries=%d, exponent=%f, duration=%d, jitter=%f",
-			az.CloudProviderBackoffRetries,
-			az.CloudProviderBackoffExponent,
-			az.CloudProviderBackoffDuration,
-			az.CloudProviderBackoffJitter)
+	az.metadata, err = NewInstanceMetadataService(metadataURL)
+	if err != nil {
+		return nil, err
 	}
-
-	az.metadata = NewInstanceMetadata()
 
 	if az.MaximumLoadBalancerRuleCount == 0 {
 		az.MaximumLoadBalancerRuleCount = maximumLoadBalancerRuleCount
@@ -476,7 +511,7 @@ func initDiskControllers(az *Cloud) error {
 
 // SetInformers sets informers for Azure cloud provider.
 func (az *Cloud) SetInformers(informerFactory informers.SharedInformerFactory) {
-	glog.Infof("Setting up informers for Azure cloud provider")
+	klog.Infof("Setting up informers for Azure cloud provider")
 	nodeInformer := informerFactory.Core().V1().Nodes().Informer()
 	nodeInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
@@ -499,12 +534,12 @@ func (az *Cloud) SetInformers(informerFactory informers.SharedInformerFactory) {
 			if !isNode {
 				deletedState, ok := obj.(cache.DeletedFinalStateUnknown)
 				if !ok {
-					glog.Errorf("Received unexpected object: %v", obj)
+					klog.Errorf("Received unexpected object: %v", obj)
 					return
 				}
 				node, ok = deletedState.Obj.(*v1.Node)
 				if !ok {
-					glog.Errorf("DeletedFinalStateUnknown contained non-Node object: %v", deletedState.Obj)
+					klog.Errorf("DeletedFinalStateUnknown contained non-Node object: %v", deletedState.Obj)
 					return
 				}
 			}

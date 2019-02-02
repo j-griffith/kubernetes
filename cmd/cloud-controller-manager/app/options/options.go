@@ -22,7 +22,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/golang/glog"
+	"k8s.io/klog"
 
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -44,6 +44,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/controller"
 	"k8s.io/kubernetes/pkg/master/ports"
+
 	// add the kubernetes feature gates
 	_ "k8s.io/kubernetes/pkg/features"
 )
@@ -102,7 +103,8 @@ func NewCloudControllerManagerOptions() (*CloudControllerManagerOptions, error) 
 	s.Authorization.RemoteKubeConfigFileOptional = true
 	s.Authorization.AlwaysAllowPaths = []string{"/healthz"}
 
-	s.SecureServing.ServerCert.CertDirectory = "/var/run/kubernetes"
+	// Set the PairName but leave certificate directory blank to generate in-memory by default
+	s.SecureServing.ServerCert.CertDirectory = ""
 	s.SecureServing.ServerCert.PairName = "cloud-controller-manager"
 	s.SecureServing.BindPort = ports.CloudControllerManagerPort
 
@@ -141,7 +143,7 @@ func (o *CloudControllerManagerOptions) Flags() apiserverflag.NamedFlagSets {
 	fs.StringVar(&o.Kubeconfig, "kubeconfig", o.Kubeconfig, "Path to kubeconfig file with authorization and master location information.")
 	fs.DurationVar(&o.NodeStatusUpdateFrequency.Duration, "node-status-update-frequency", o.NodeStatusUpdateFrequency.Duration, "Specifies how often the controller updates nodes' status.")
 
-	utilfeature.DefaultFeatureGate.AddFlag(fss.FlagSet("generic"))
+	utilfeature.DefaultMutableFeatureGate.AddFlag(fss.FlagSet("generic"))
 
 	return fss
 }
@@ -263,7 +265,7 @@ func (o *CloudControllerManagerOptions) Config() (*cloudcontrollerconfig.Config,
 
 func createRecorder(kubeClient clientset.Interface, userAgent string) record.EventRecorder {
 	eventBroadcaster := record.NewBroadcaster()
-	eventBroadcaster.StartLogging(glog.Infof)
+	eventBroadcaster.StartLogging(klog.Infof)
 	eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: kubeClient.CoreV1().Events("")})
 	// TODO: remove dependence on the legacyscheme
 	return eventBroadcaster.NewRecorder(legacyscheme.Scheme, v1.EventSource{Component: userAgent})

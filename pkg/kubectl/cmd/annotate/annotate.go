@@ -22,8 +22,8 @@ import (
 	"io"
 
 	jsonpatch "github.com/evanphx/json-patch"
-	"github.com/golang/glog"
 	"github.com/spf13/cobra"
+	"k8s.io/klog"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -109,6 +109,7 @@ var (
     kubectl annotate pods foo description-`))
 )
 
+// NewAnnotateOptions creates the options for annotate
 func NewAnnotateOptions(ioStreams genericclioptions.IOStreams) *AnnotateOptions {
 	return &AnnotateOptions{
 		PrintFlags: genericclioptions.NewPrintFlags("annotated").WithTypeSetter(scheme.Scheme),
@@ -119,6 +120,7 @@ func NewAnnotateOptions(ioStreams genericclioptions.IOStreams) *AnnotateOptions 
 	}
 }
 
+// NewCmdAnnotate creates the `annotate` command
 func NewCmdAnnotate(parent string, f cmdutil.Factory, ioStreams genericclioptions.IOStreams) *cobra.Command {
 	o := NewAnnotateOptions(ioStreams)
 
@@ -126,7 +128,7 @@ func NewCmdAnnotate(parent string, f cmdutil.Factory, ioStreams genericclioption
 		Use:                   "annotate [--overwrite] (-f FILENAME | TYPE NAME) KEY_1=VAL_1 ... KEY_N=VAL_N [--resource-version=version]",
 		DisableFlagsInUseLine: true,
 		Short:                 i18n.T("Update the annotations on a resource"),
-		Long:                  annotateLong + "\n\n" + cmdutil.SuggestApiResources(parent),
+		Long:                  annotateLong + "\n\n" + cmdutil.SuggestAPIResources(parent),
 		Example:               annotateExample,
 		Run: func(cmd *cobra.Command, args []string) {
 			cmdutil.CheckErr(o.Complete(f, cmd, args))
@@ -271,7 +273,7 @@ func (o AnnotateOptions) RunAnnotate() error {
 				return err
 			}
 			if err := o.Recorder.Record(info.Object); err != nil {
-				glog.V(4).Infof("error recording current command: %v", err)
+				klog.V(4).Infof("error recording current command: %v", err)
 			}
 			if err := o.updateAnnotations(obj); err != nil {
 				return err
@@ -283,7 +285,7 @@ func (o AnnotateOptions) RunAnnotate() error {
 			patchBytes, err := jsonpatch.CreateMergePatch(oldData, newData)
 			createdPatch := err == nil
 			if err != nil {
-				glog.V(2).Infof("couldn't compute patch: %v", err)
+				klog.V(2).Infof("couldn't compute patch: %v", err)
 			}
 
 			mapping := info.ResourceMapping()

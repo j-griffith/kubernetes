@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pkg/errors"
 	"github.com/renstrom/dedent"
 
 	"net/http"
@@ -31,6 +32,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	kubeadmapi "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmapiv1beta1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta1"
+	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	utilruntime "k8s.io/kubernetes/cmd/kubeadm/app/util/runtime"
 	"k8s.io/utils/exec"
 	fakeexec "k8s.io/utils/exec/testing"
@@ -173,12 +175,12 @@ func (pfct preflightCheckTest) Name() string {
 	return "preflightCheckTest"
 }
 
-func (pfct preflightCheckTest) Check() (warning, errors []error) {
+func (pfct preflightCheckTest) Check() (warning, errorList []error) {
 	if pfct.msg == "warning" {
-		return []error{fmt.Errorf("warning")}, nil
+		return []error{errors.New("warning")}, nil
 	}
 	if pfct.msg != "" {
-		return nil, []error{fmt.Errorf("fake error")}
+		return nil, []error{errors.New("fake error")}
 	}
 	return
 }
@@ -191,7 +193,7 @@ func TestRunInitMasterChecks(t *testing.T) {
 	}{
 		{name: "Test valid advertised address",
 			cfg: &kubeadmapi.InitConfiguration{
-				APIEndpoint: kubeadmapi.APIEndpoint{AdvertiseAddress: "foo"},
+				LocalAPIEndpoint: kubeadmapi.APIEndpoint{AdvertiseAddress: "foo"},
 			},
 			expected: false,
 		},
@@ -224,7 +226,7 @@ func TestRunInitMasterChecks(t *testing.T) {
 		},
 		{
 			cfg: &kubeadmapi.InitConfiguration{
-				APIEndpoint: kubeadmapi.APIEndpoint{AdvertiseAddress: "2001:1234::1:15"},
+				LocalAPIEndpoint: kubeadmapi.APIEndpoint{AdvertiseAddress: "2001:1234::1:15"},
 			},
 			expected: false,
 		},
@@ -256,7 +258,7 @@ func TestRunJoinNodeChecks(t *testing.T) {
 			cfg: &kubeadmapi.JoinConfiguration{
 				Discovery: kubeadmapi.Discovery{
 					BootstrapToken: &kubeadmapi.BootstrapTokenDiscovery{
-						APIServerEndpoints: []string{"192.168.1.15"},
+						APIServerEndpoint: "192.168.1.15",
 					},
 				},
 			},
@@ -266,7 +268,7 @@ func TestRunJoinNodeChecks(t *testing.T) {
 			cfg: &kubeadmapi.JoinConfiguration{
 				Discovery: kubeadmapi.Discovery{
 					BootstrapToken: &kubeadmapi.BootstrapTokenDiscovery{
-						APIServerEndpoints: []string{"2001:1234::1:15"},
+						APIServerEndpoint: "2001:1234::1:15",
 					},
 				},
 			},
@@ -647,43 +649,43 @@ func TestKubeletVersionCheck(t *testing.T) {
 		expectErrors   bool
 		expectWarnings bool
 	}{
-		{"v1.12.2", "", false, false},               // check minimally supported version when there is no information about control plane
-		{"v1.9.3", "v1.9.8", true, false},           // too old kubelet (older than kubeadmconstants.MinimumKubeletVersion), should fail.
-		{"v1.11.0", "v1.11.5", false, false},        // kubelet within same major.minor as control plane
-		{"v1.11.5", "v1.11.1", false, false},        // kubelet is newer, but still within same major.minor as control plane
-		{"v1.11.0", "v1.12.1", false, false},        // kubelet is lower than control plane, but newer than minimally supported
-		{"v1.12.0-alpha.1", "v1.11.1", true, false}, // kubelet is newer (development build) than control plane, should fail.
-		{"v1.12.0", "v1.11.5", true, false},         // kubelet is newer (release) than control plane, should fail.
+		{"v" + constants.CurrentKubernetesVersion.WithPatch(2).String(), "", false, false},                                                                     // check minimally supported version when there is no information about control plane
+		{"v1.11.3", "v1.11.8", true, false},                                                                                                                    // too old kubelet (older than kubeadmconstants.MinimumKubeletVersion), should fail.
+		{"v" + constants.MinimumKubeletVersion.String(), constants.MinimumControlPlaneVersion.WithPatch(5).String(), false, false},                             // kubelet within same major.minor as control plane
+		{"v" + constants.MinimumKubeletVersion.WithPatch(5).String(), constants.MinimumControlPlaneVersion.WithPatch(1).String(), false, false},                // kubelet is newer, but still within same major.minor as control plane
+		{"v" + constants.MinimumKubeletVersion.String(), constants.CurrentKubernetesVersion.WithPatch(1).String(), false, false},                               // kubelet is lower than control plane, but newer than minimally supported
+		{"v" + constants.CurrentKubernetesVersion.WithPreRelease("alpha.1").String(), constants.MinimumControlPlaneVersion.WithPatch(1).String(), true, false}, // kubelet is newer (development build) than control plane, should fail.
+		{"v" + constants.CurrentKubernetesVersion.String(), constants.MinimumControlPlaneVersion.WithPatch(5).String(), true, false},                           // kubelet is newer (release) than control plane, should fail.
 	}
 
 	for _, tc := range cases {
-		fcmd := fakeexec.FakeCmd{
-			CombinedOutputScript: []fakeexec.FakeCombinedOutputAction{
-				func() ([]byte, error) { return []byte("Kubernetes " + tc.kubeletVersion), nil },
-			},
-		}
-		fexec := &fakeexec.FakeExec{
-			CommandScript: []fakeexec.FakeCommandAction{
-				func(cmd string, args ...string) exec.Cmd { return fakeexec.InitFakeCmd(&fcmd, cmd, args...) },
-			},
-		}
+		t.Run(tc.kubeletVersion, func(t *testing.T) {
+			fcmd := fakeexec.FakeCmd{
+				CombinedOutputScript: []fakeexec.FakeCombinedOutputAction{
+					func() ([]byte, error) { return []byte("Kubernetes " + tc.kubeletVersion), nil },
+				},
+			}
+			fexec := &fakeexec.FakeExec{
+				CommandScript: []fakeexec.FakeCommandAction{
+					func(cmd string, args ...string) exec.Cmd { return fakeexec.InitFakeCmd(&fcmd, cmd, args...) },
+				},
+			}
 
-		check := KubeletVersionCheck{KubernetesVersion: tc.k8sVersion, exec: fexec}
-		warnings, errors := check.Check()
+			check := KubeletVersionCheck{KubernetesVersion: tc.k8sVersion, exec: fexec}
+			warnings, errors := check.Check()
 
-		switch {
-		case warnings != nil && !tc.expectWarnings:
-			t.Errorf("KubeletVersionCheck: unexpected warnings for kubelet version %q and kubernetes version %q. Warnings: %v", tc.kubeletVersion, tc.k8sVersion, warnings)
-		case warnings == nil && tc.expectWarnings:
-			t.Errorf("KubeletVersionCheck: expected warnings for kubelet version %q and kubernetes version %q but got nothing", tc.kubeletVersion, tc.k8sVersion)
-		case errors != nil && !tc.expectErrors:
-			t.Errorf("KubeletVersionCheck: unexpected errors for kubelet version %q and kubernetes version %q. errors: %v", tc.kubeletVersion, tc.k8sVersion, errors)
-		case errors == nil && tc.expectErrors:
-			t.Errorf("KubeletVersionCheck: expected errors for kubelet version %q and kubernetes version %q but got nothing", tc.kubeletVersion, tc.k8sVersion)
-		}
-
+			switch {
+			case warnings != nil && !tc.expectWarnings:
+				t.Errorf("KubeletVersionCheck: unexpected warnings for kubelet version %q and Kubernetes version %q. Warnings: %v", tc.kubeletVersion, tc.k8sVersion, warnings)
+			case warnings == nil && tc.expectWarnings:
+				t.Errorf("KubeletVersionCheck: expected warnings for kubelet version %q and Kubernetes version %q but got nothing", tc.kubeletVersion, tc.k8sVersion)
+			case errors != nil && !tc.expectErrors:
+				t.Errorf("KubeletVersionCheck: unexpected errors for kubelet version %q and Kubernetes version %q. errors: %v", tc.kubeletVersion, tc.k8sVersion, errors)
+			case errors == nil && tc.expectErrors:
+				t.Errorf("KubeletVersionCheck: expected errors for kubelet version %q and Kubernetes version %q but got nothing", tc.kubeletVersion, tc.k8sVersion)
+			}
+		})
 	}
-
 }
 
 func TestSetHasItemOrAll(t *testing.T) {
@@ -701,15 +703,17 @@ func TestSetHasItemOrAll(t *testing.T) {
 	}
 
 	for _, rt := range tests {
-		result := setHasItemOrAll(rt.ignoreSet, rt.testString)
-		if result != rt.expectedResult {
-			t.Errorf(
-				"setHasItemOrAll: expected: %v actual: %v (arguments: %q, %q)",
-				rt.expectedResult, result,
-				rt.ignoreSet,
-				rt.testString,
-			)
-		}
+		t.Run(rt.testString, func(t *testing.T) {
+			result := setHasItemOrAll(rt.ignoreSet, rt.testString)
+			if result != rt.expectedResult {
+				t.Errorf(
+					"setHasItemOrAll: expected: %v actual: %v (arguments: %q, %q)",
+					rt.expectedResult, result,
+					rt.ignoreSet,
+					rt.testString,
+				)
+			}
+		})
 	}
 }
 
@@ -789,12 +793,14 @@ func TestNumCPUCheck(t *testing.T) {
 	}
 
 	for _, rt := range tests {
-		warnings, errors := NumCPUCheck{NumCPU: rt.numCPU}.Check()
-		if len(warnings) != rt.numWarnings {
-			t.Errorf("expected %d warning(s) but got %d: %q", rt.numWarnings, len(warnings), warnings)
-		}
-		if len(errors) != rt.numErrors {
-			t.Errorf("expected %d warning(s) but got %d: %q", rt.numErrors, len(errors), errors)
-		}
+		t.Run(fmt.Sprintf("number of CPUs: %d", rt.numCPU), func(t *testing.T) {
+			warnings, errors := NumCPUCheck{NumCPU: rt.numCPU}.Check()
+			if len(warnings) != rt.numWarnings {
+				t.Errorf("expected %d warning(s) but got %d: %q", rt.numWarnings, len(warnings), warnings)
+			}
+			if len(errors) != rt.numErrors {
+				t.Errorf("expected %d warning(s) but got %d: %q", rt.numErrors, len(errors), errors)
+			}
+		})
 	}
 }

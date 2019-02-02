@@ -22,22 +22,20 @@ import (
 	"runtime"
 	"testing"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
-	utiltesting "k8s.io/client-go/util/testing"
+
 	// util.go uses api.Codecs.LegacyCodec so import this package to do some
 	// resource initialization.
 	"hash/fnv"
 
 	_ "k8s.io/kubernetes/pkg/apis/core/install"
-	"k8s.io/kubernetes/pkg/util/mount"
 
 	"reflect"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 
 	"k8s.io/kubernetes/pkg/util/slice"
@@ -350,45 +348,6 @@ func TestZonesToSet(t *testing.T) {
 	for _, tt := range tests {
 		if got, err := ZonesToSet(tt.zones); err != nil || !got.Equal(tt.want) {
 			t.Errorf("%v(%v) returned (%v), want (%v)", functionUnderTest, tt.zones, got, tt.want)
-		}
-	}
-}
-
-func TestDoUnmountMountPoint(t *testing.T) {
-
-	tmpDir1, err1 := utiltesting.MkTmpdir("umount_test1")
-	if err1 != nil {
-		t.Fatalf("error creating temp dir: %v", err1)
-	}
-	defer os.RemoveAll(tmpDir1)
-
-	tmpDir2, err2 := utiltesting.MkTmpdir("umount_test2")
-	if err2 != nil {
-		t.Fatalf("error creating temp dir: %v", err2)
-	}
-	defer os.RemoveAll(tmpDir2)
-
-	// Second part: want no error
-	tests := []struct {
-		mountPath    string
-		corruptedMnt bool
-	}{
-		{
-			mountPath:    tmpDir1,
-			corruptedMnt: true,
-		},
-		{
-			mountPath:    tmpDir2,
-			corruptedMnt: false,
-		},
-	}
-
-	fake := &mount.FakeMounter{}
-
-	for _, tt := range tests {
-		err := doUnmountMountPoint(tt.mountPath, fake, false, tt.corruptedMnt)
-		if err != nil {
-			t.Errorf("err Expected nil, but got: %v", err)
 		}
 	}
 }
@@ -1062,7 +1021,6 @@ func TestSelectZoneForVolume(t *testing.T) {
 		ZonesWithNodes    string
 		Node              *v1.Node
 		AllowedTopologies []v1.TopologySelectorTerm
-		VolumeScheduling  bool
 		// Expectations around returned zone from SelectZoneForVolume
 		Reject             bool   // expect error due to validation failing
 		ExpectSpecificZone bool   // expect returned zone to specifically match a single zone (rather than one from a set)
@@ -1075,7 +1033,6 @@ func TestSelectZoneForVolume(t *testing.T) {
 		// [1] Node irrelevant
 		// [2] Zone and Zones parameters presents
 		// [3] AllowedTopologies irrelevant
-		// [4] VolumeScheduling irrelevant
 		{
 			Name:         "Nil_Node_with_Zone_Zones_parameters_present",
 			ZonePresent:  true,
@@ -1089,53 +1046,45 @@ func TestSelectZoneForVolume(t *testing.T) {
 		// [1] Node with no zone labels
 		// [2] Zone/Zones parameter irrelevant
 		// [3] AllowedTopologies irrelevant
-		// [4] VolumeScheduling enabled
 		{
-			Name:             "Node_with_no_Zone_labels",
-			Node:             nodeWithNoLabels,
-			VolumeScheduling: true,
-			Reject:           true,
+			Name:   "Node_with_no_Zone_labels",
+			Node:   nodeWithNoLabels,
+			Reject: true,
 		},
 
 		// Node with Zone labels as well as Zone parameter specified [Fail]
 		// [1] Node with zone labels
 		// [2] Zone parameter specified
 		// [3] AllowedTopologies irrelevant
-		// [4] VolumeScheduling enabled
 		{
-			Name:             "Node_with_Zone_labels_and_Zone_parameter_present",
-			Node:             nodeWithZoneLabels,
-			ZonePresent:      true,
-			Zone:             "zoneX",
-			VolumeScheduling: true,
-			Reject:           true,
+			Name:        "Node_with_Zone_labels_and_Zone_parameter_present",
+			Node:        nodeWithZoneLabels,
+			ZonePresent: true,
+			Zone:        "zoneX",
+			Reject:      true,
 		},
 
 		// Node with Zone labels as well as Zones parameter specified [Fail]
 		// [1] Node with zone labels
 		// [2] Zones parameter specified
 		// [3] AllowedTopologies irrelevant
-		// [4] VolumeScheduling enabled
 		{
-			Name:             "Node_with_Zone_labels_and_Zones_parameter_present",
-			Node:             nodeWithZoneLabels,
-			ZonesPresent:     true,
-			Zones:            "zoneX,zoneY",
-			VolumeScheduling: true,
-			Reject:           true,
+			Name:         "Node_with_Zone_labels_and_Zones_parameter_present",
+			Node:         nodeWithZoneLabels,
+			ZonesPresent: true,
+			Zones:        "zoneX,zoneY",
+			Reject:       true,
 		},
 
 		// Zone parameter as well as AllowedTopologies specified [Fail]
 		// [1] nil Node
 		// [2] Zone parameter specified
 		// [3] AllowedTopologies specified
-		// [4] VolumeScheduling enabled
 		{
-			Name:             "Nil_Node_and_Zone_parameter_and_Allowed_Topology_term",
-			Node:             nil,
-			ZonePresent:      true,
-			Zone:             "zoneX",
-			VolumeScheduling: true,
+			Name:        "Nil_Node_and_Zone_parameter_and_Allowed_Topology_term",
+			Node:        nil,
+			ZonePresent: true,
+			Zone:        "zoneX",
 			AllowedTopologies: []v1.TopologySelectorTerm{
 				{
 					MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
@@ -1153,13 +1102,11 @@ func TestSelectZoneForVolume(t *testing.T) {
 		// [1] nil Node
 		// [2] Zones parameter specified
 		// [3] AllowedTopologies specified
-		// [4] VolumeScheduling enabled
 		{
-			Name:             "Nil_Node_and_Zones_parameter_and_Allowed_Topology_term",
-			Node:             nil,
-			ZonesPresent:     true,
-			Zones:            "zoneX,zoneY",
-			VolumeScheduling: true,
+			Name:         "Nil_Node_and_Zones_parameter_and_Allowed_Topology_term",
+			Node:         nil,
+			ZonesPresent: true,
+			Zones:        "zoneX,zoneY",
 			AllowedTopologies: []v1.TopologySelectorTerm{
 				{
 					MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
@@ -1177,11 +1124,9 @@ func TestSelectZoneForVolume(t *testing.T) {
 		// [1] nil Node
 		// [2] no Zone/Zones parameter
 		// [3] AllowedTopologies with invalid key specified
-		// [4] VolumeScheduling enabled
 		{
-			Name:             "Nil_Node_and_Invalid_Allowed_Topology_Key",
-			Node:             nil,
-			VolumeScheduling: true,
+			Name: "Nil_Node_and_Invalid_Allowed_Topology_Key",
+			Node: nil,
 			AllowedTopologies: []v1.TopologySelectorTerm{
 				{
 					MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
@@ -1203,11 +1148,9 @@ func TestSelectZoneForVolume(t *testing.T) {
 		// [1] nil Node
 		// [2] no Zone/Zones parameter
 		// [3] Invalid AllowedTopologies
-		// [4] VolumeScheduling enabled
 		{
-			Name:             "Nil_Node_and_Invalid_AllowedTopologies",
-			Node:             nil,
-			VolumeScheduling: true,
+			Name: "Nil_Node_and_Invalid_AllowedTopologies",
+			Node: nil,
 			AllowedTopologies: []v1.TopologySelectorTerm{
 				{
 					MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{},
@@ -1216,77 +1159,29 @@ func TestSelectZoneForVolume(t *testing.T) {
 			Reject: true,
 		},
 
-		// POSITIVE TESTS WITH VolumeScheduling DISABLED
-
-		// Select zone from active zones [Pass]
-		// [1] nil Node (Node irrelevant)
-		// [2] no Zone parameter
-		// [3] no AllowedTopologies
-		// [4] VolumeScheduling disabled
-		{
-			Name:             "No_Zone_Zones_parameter_and_VolumeScheduling_disabled",
-			ZonesWithNodes:   "zoneX,zoneY",
-			VolumeScheduling: false,
-			Reject:           false,
-			ExpectedZones:    "zoneX,zoneY",
-		},
-
-		// Select zone from single zone parameter [Pass]
-		// [1] nil Node (Node irrelevant)
-		// [2] Zone parameter specified
-		// [3] no AllowedTopologies
-		// [4] VolumeScheduling disabled
-		{
-			Name:               "Zone_parameter_present_and_VolumeScheduling_disabled",
-			ZonePresent:        true,
-			Zone:               "zoneX",
-			VolumeScheduling:   false,
-			Reject:             false,
-			ExpectSpecificZone: true,
-			ExpectedZone:       "zoneX",
-		},
-
-		// Select zone from zones parameter [Pass]
-		// [1] nil Node (Node irrelevant)
-		// [2] Zones parameter specified
-		// [3] no AllowedTopologies
-		// [4] VolumeScheduling disabled
-		{
-			Name:             "Zones_parameter_present_and_VolumeScheduling_disabled",
-			ZonesPresent:     true,
-			Zones:            "zoneX,zoneY",
-			VolumeScheduling: false,
-			Reject:           false,
-			ExpectedZones:    "zoneX,zoneY",
-		},
-
 		// POSITIVE TESTS WITH VolumeScheduling ENABLED
 
 		// Select zone from active zones [Pass]
 		// [1] nil Node
 		// [2] no Zone parameter specified
 		// [3] no AllowedTopologies
-		// [4] VolumeScheduling enabled
 		{
-			Name:             "Nil_Node_and_No_Zone_Zones_parameter_and_no_Allowed_topologies_and_VolumeScheduling_enabled",
-			Node:             nil,
-			ZonesWithNodes:   "zoneX,zoneY",
-			VolumeScheduling: true,
-			Reject:           false,
-			ExpectedZones:    "zoneX,zoneY",
+			Name:           "Nil_Node_and_No_Zone_Zones_parameter_and_no_Allowed_topologies_and_VolumeScheduling_enabled",
+			Node:           nil,
+			ZonesWithNodes: "zoneX,zoneY",
+			Reject:         false,
+			ExpectedZones:  "zoneX,zoneY",
 		},
 
 		// Select zone from single zone parameter [Pass]
 		// [1] nil Node
 		// [2] Zone parameter specified
 		// [3] no AllowedTopology specified
-		// [4] VolumeScheduling enabled
 		{
 			Name:               "Nil_Node_and_Zone_parameter_present_and_VolumeScheduling_enabled",
 			ZonePresent:        true,
 			Zone:               "zoneX",
 			Node:               nil,
-			VolumeScheduling:   true,
 			Reject:             false,
 			ExpectSpecificZone: true,
 			ExpectedZone:       "zoneX",
@@ -1296,26 +1191,22 @@ func TestSelectZoneForVolume(t *testing.T) {
 		// [1] nil Node
 		// [2] Zones parameter specified
 		// [3] no AllowedTopology
-		// [4] VolumeScheduling enabled
 		{
-			Name:             "Nil_Node_and_Zones_parameter_present_and_VolumeScheduling_enabled",
-			ZonesPresent:     true,
-			Zones:            "zoneX,zoneY",
-			Node:             nil,
-			VolumeScheduling: true,
-			Reject:           false,
-			ExpectedZones:    "zoneX,zoneY",
+			Name:          "Nil_Node_and_Zones_parameter_present_and_VolumeScheduling_enabled",
+			ZonesPresent:  true,
+			Zones:         "zoneX,zoneY",
+			Node:          nil,
+			Reject:        false,
+			ExpectedZones: "zoneX,zoneY",
 		},
 
 		// Select zone from node label [Pass]
 		// [1] Node with zone labels
 		// [2] no zone/zones parameters
 		// [3] no AllowedTopology
-		// [4] VolumeScheduling enabled
 		{
 			Name:               "Node_with_Zone_labels_and_VolumeScheduling_enabled",
 			Node:               nodeWithZoneLabels,
-			VolumeScheduling:   true,
 			Reject:             false,
 			ExpectSpecificZone: true,
 			ExpectedZone:       "zoneX",
@@ -1325,11 +1216,9 @@ func TestSelectZoneForVolume(t *testing.T) {
 		// [1] Node with zone labels
 		// [2] no Zone/Zones parameters
 		// [3] AllowedTopology with single term with multiple values specified (ignored)
-		// [4] VolumeScheduling enabled
 		{
-			Name:             "Node_with_Zone_labels_and_Multiple_Allowed_Topology_values_and_VolumeScheduling_enabled",
-			Node:             nodeWithZoneLabels,
-			VolumeScheduling: true,
+			Name: "Node_with_Zone_labels_and_Multiple_Allowed_Topology_values_and_VolumeScheduling_enabled",
+			Node: nodeWithZoneLabels,
 			AllowedTopologies: []v1.TopologySelectorTerm{
 				{
 					MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
@@ -1349,11 +1238,9 @@ func TestSelectZoneForVolume(t *testing.T) {
 		// [1] nil Node
 		// [2] no Zone/Zones parametes specified
 		// [3] AllowedTopologies with single term with multiple values specified
-		// [4] VolumeScheduling enabled
 		{
-			Name:             "Nil_Node_with_Multiple_Allowed_Topology_values_and_VolumeScheduling_enabled",
-			Node:             nil,
-			VolumeScheduling: true,
+			Name: "Nil_Node_with_Multiple_Allowed_Topology_values_and_VolumeScheduling_enabled",
+			Node: nil,
 			AllowedTopologies: []v1.TopologySelectorTerm{
 				{
 					MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
@@ -1372,11 +1259,9 @@ func TestSelectZoneForVolume(t *testing.T) {
 		// [1] nil Node
 		// [2] no Zone/Zones parametes specified
 		// [3] AllowedTopologies with multiple terms specified
-		// [4] VolumeScheduling enabled
 		{
-			Name:             "Nil_Node_and_Multiple_Allowed_Topology_terms_and_VolumeScheduling_enabled",
-			Node:             nil,
-			VolumeScheduling: true,
+			Name: "Nil_Node_and_Multiple_Allowed_Topology_terms_and_VolumeScheduling_enabled",
+			Node: nil,
 			AllowedTopologies: []v1.TopologySelectorTerm{
 				{
 					MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
@@ -1404,11 +1289,9 @@ func TestSelectZoneForVolume(t *testing.T) {
 		// [1] nil Node
 		// [2] no Zone/Zones parametes specified
 		// [3] AllowedTopologies with single term and value specified
-		// [4] VolumeScheduling enabled
 		{
-			Name:             "Nil_Node_and_Single_Allowed_Topology_term_value_and_VolumeScheduling_enabled",
-			Node:             nil,
-			VolumeScheduling: true,
+			Name: "Nil_Node_and_Single_Allowed_Topology_term_value_and_VolumeScheduling_enabled",
+			Node: nil,
 			AllowedTopologies: []v1.TopologySelectorTerm{
 				{
 					MatchLabelExpressions: []v1.TopologySelectorLabelRequirement{
@@ -1426,59 +1309,52 @@ func TestSelectZoneForVolume(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		utilfeature.DefaultFeatureGate.Set("VolumeScheduling=false")
-		if test.VolumeScheduling {
-			utilfeature.DefaultFeatureGate.Set("VolumeScheduling=true")
-		}
+		t.Run(test.Name, func(t *testing.T) {
+			var zonesParameter, zonesWithNodes sets.String
+			var err error
 
-		var zonesParameter, zonesWithNodes sets.String
-		var err error
-
-		if test.Zones != "" {
-			zonesParameter, err = ZonesToSet(test.Zones)
-			if err != nil {
-				t.Errorf("Could not convert Zones to a set: %s. This is a test error %s", test.Zones, test.Name)
-				continue
-			}
-		}
-
-		if test.ZonesWithNodes != "" {
-			zonesWithNodes, err = ZonesToSet(test.ZonesWithNodes)
-			if err != nil {
-				t.Errorf("Could not convert specified ZonesWithNodes to a set: %s. This is a test error %s", test.ZonesWithNodes, test.Name)
-				continue
-			}
-		}
-
-		zone, err := SelectZoneForVolume(test.ZonePresent, test.ZonesPresent, test.Zone, zonesParameter, zonesWithNodes, test.Node, test.AllowedTopologies, test.Name)
-
-		if test.Reject && err == nil {
-			t.Errorf("Unexpected zone from SelectZoneForVolume for %s", zone)
-			continue
-		}
-
-		if !test.Reject {
-			if err != nil {
-				t.Errorf("Unexpected error from SelectZoneForVolume for %s; Error: %v", test.Name, err)
-				continue
-			}
-
-			if test.ExpectSpecificZone == true {
-				if zone != test.ExpectedZone {
-					t.Errorf("Expected zone %v does not match obtained zone %v for %s", test.ExpectedZone, zone, test.Name)
+			if test.Zones != "" {
+				zonesParameter, err = ZonesToSet(test.Zones)
+				if err != nil {
+					t.Fatalf("Could not convert Zones to a set: %s. This is a test error %s", test.Zones, test.Name)
 				}
-				continue
 			}
 
-			expectedZones, err := ZonesToSet(test.ExpectedZones)
-			if err != nil {
-				t.Errorf("Could not convert ExpectedZones to a set: %s. This is a test error", test.ExpectedZones)
-				continue
+			if test.ZonesWithNodes != "" {
+				zonesWithNodes, err = ZonesToSet(test.ZonesWithNodes)
+				if err != nil {
+					t.Fatalf("Could not convert specified ZonesWithNodes to a set: %s. This is a test error %s", test.ZonesWithNodes, test.Name)
+				}
 			}
-			if !expectedZones.Has(zone) {
-				t.Errorf("Obtained zone %s not member of expectedZones %s", zone, expectedZones)
+
+			zone, err := SelectZoneForVolume(test.ZonePresent, test.ZonesPresent, test.Zone, zonesParameter, zonesWithNodes, test.Node, test.AllowedTopologies, test.Name)
+
+			if test.Reject && err == nil {
+				t.Errorf("Unexpected zone from SelectZoneForVolume for %s", zone)
 			}
-		}
+
+			if !test.Reject {
+				if err != nil {
+					t.Errorf("Unexpected error from SelectZoneForVolume for %s; Error: %v", test.Name, err)
+				}
+
+				if test.ExpectSpecificZone == true {
+					if zone != test.ExpectedZone {
+						t.Errorf("Expected zone %v does not match obtained zone %v for %s", test.ExpectedZone, zone, test.Name)
+					}
+				}
+
+				if test.ExpectedZones != "" {
+					expectedZones, err := ZonesToSet(test.ExpectedZones)
+					if err != nil {
+						t.Fatalf("Could not convert ExpectedZones to a set: %s. This is a test error", test.ExpectedZones)
+					}
+					if !expectedZones.Has(zone) {
+						t.Errorf("Obtained zone %s not member of expectedZones %s", zone, expectedZones)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -2369,6 +2245,148 @@ func TestGetWindowsPath(t *testing.T) {
 		result := GetWindowsPath(test.path)
 		if result != test.expectedPath {
 			t.Errorf("GetWindowsPath(%v) returned (%v), want (%v)", test.path, result, test.expectedPath)
+		}
+	}
+}
+
+func TestIsWindowsUNCPath(t *testing.T) {
+	tests := []struct {
+		goos      string
+		path      string
+		isUNCPath bool
+	}{
+		{
+			goos:      "linux",
+			path:      `/usr/bin`,
+			isUNCPath: false,
+		},
+		{
+			goos:      "linux",
+			path:      `\\.\pipe\foo`,
+			isUNCPath: false,
+		},
+		{
+			goos:      "windows",
+			path:      `C:\foo`,
+			isUNCPath: false,
+		},
+		{
+			goos:      "windows",
+			path:      `\\server\share\foo`,
+			isUNCPath: true,
+		},
+		{
+			goos:      "windows",
+			path:      `\\?\server\share`,
+			isUNCPath: true,
+		},
+		{
+			goos:      "windows",
+			path:      `\\?\c:\`,
+			isUNCPath: true,
+		},
+		{
+			goos:      "windows",
+			path:      `\\.\pipe\valid_pipe`,
+			isUNCPath: true,
+		},
+	}
+
+	for _, test := range tests {
+		result := IsWindowsUNCPath(test.goos, test.path)
+		if result != test.isUNCPath {
+			t.Errorf("IsWindowsUNCPath(%v) returned (%v), expected (%v)", test.path, result, test.isUNCPath)
+		}
+	}
+}
+
+func TestIsWindowsLocalPath(t *testing.T) {
+	tests := []struct {
+		goos               string
+		path               string
+		isWindowsLocalPath bool
+	}{
+		{
+			goos:               "linux",
+			path:               `/usr/bin`,
+			isWindowsLocalPath: false,
+		},
+		{
+			goos:               "linux",
+			path:               `\\.\pipe\foo`,
+			isWindowsLocalPath: false,
+		},
+		{
+			goos:               "windows",
+			path:               `C:\foo`,
+			isWindowsLocalPath: false,
+		},
+		{
+			goos:               "windows",
+			path:               `:\foo`,
+			isWindowsLocalPath: false,
+		},
+		{
+			goos:               "windows",
+			path:               `X:\foo`,
+			isWindowsLocalPath: false,
+		},
+		{
+			goos:               "windows",
+			path:               `\\server\share\foo`,
+			isWindowsLocalPath: false,
+		},
+		{
+			goos:               "windows",
+			path:               `\\?\server\share`,
+			isWindowsLocalPath: false,
+		},
+		{
+			goos:               "windows",
+			path:               `\\?\c:\`,
+			isWindowsLocalPath: false,
+		},
+		{
+			goos:               "windows",
+			path:               `\\.\pipe\valid_pipe`,
+			isWindowsLocalPath: false,
+		},
+		{
+			goos:               "windows",
+			path:               `foo`,
+			isWindowsLocalPath: false,
+		},
+		{
+			goos:               "windows",
+			path:               `:foo`,
+			isWindowsLocalPath: false,
+		},
+		{
+			goos:               "windows",
+			path:               `\foo`,
+			isWindowsLocalPath: true,
+		},
+		{
+			goos:               "windows",
+			path:               `\foo\bar`,
+			isWindowsLocalPath: true,
+		},
+		{
+			goos:               "windows",
+			path:               `/foo`,
+			isWindowsLocalPath: true,
+		},
+		{
+			goos:               "windows",
+			path:               `/foo/bar`,
+			isWindowsLocalPath: true,
+		},
+	}
+
+	for _, test := range tests {
+		result := IsWindowsLocalPath(test.goos, test.path)
+		if result != test.isWindowsLocalPath {
+			t.Errorf("isWindowsLocalPath(%v) returned (%v), expected (%v)", test.path, result, test.isWindowsLocalPath)
 		}
 	}
 }

@@ -23,12 +23,44 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/renstrom/dedent"
+
+	clientsetfake "k8s.io/client-go/kubernetes/fake"
 	kubeadmapiv1beta1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta1"
 	"k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/validation"
 	kubeadmconstants "k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	"k8s.io/kubernetes/cmd/kubeadm/app/preflight"
+	testutil "k8s.io/kubernetes/cmd/kubeadm/test"
 	"k8s.io/utils/exec"
 	fakeexec "k8s.io/utils/exec/testing"
+)
+
+const (
+	etcdPod = `apiVersion: v1
+kind: Pod
+metadata:
+spec:
+  volumes:
+  - hostPath:
+      path: /path/to/etcd
+      type: DirectoryOrCreate
+    name: etcd-data
+  - hostPath:
+      path: /etc/kubernetes/pki/etcd
+      type: DirectoryOrCreate
+    name: etcd-certs`
+
+	etcdPodWithoutDataVolume = `apiVersion: v1
+kind: Pod
+metadata:
+spec:
+  volumes:
+  - hostPath:
+      path: /etc/kubernetes/pki/etcd
+      type: DirectoryOrCreate
+    name: etcd-certs`
+
+	etcdPodInvalid = `invalid pod`
 )
 
 func assertExists(t *testing.T, path string) {
@@ -163,51 +195,53 @@ func TestConfigDirCleaner(t *testing.T) {
 	}
 
 	for name, test := range tests {
-		t.Logf("Running test: %s", name)
+		t.Run(name, func(t *testing.T) {
+			t.Logf("Running test: %s", name)
 
-		// Create a temporary directory for our fake config dir:
-		tmpDir, err := ioutil.TempDir("", "kubeadm-reset-test")
-		if err != nil {
-			t.Errorf("Unable to create temporary directory: %s", err)
-		}
-
-		for _, createDir := range test.setupDirs {
-			err := os.Mkdir(filepath.Join(tmpDir, createDir), 0700)
+			// Create a temporary directory for our fake config dir:
+			tmpDir, err := ioutil.TempDir("", "kubeadm-reset-test")
 			if err != nil {
-				t.Errorf("Unable to setup test config directory: %s", err)
+				t.Errorf("Unable to create temporary directory: %s", err)
 			}
-		}
 
-		for _, createFile := range test.setupFiles {
-			fullPath := filepath.Join(tmpDir, createFile)
-			f, err := os.Create(fullPath)
-			if err != nil {
-				t.Errorf("Unable to create test file: %s", err)
+			for _, createDir := range test.setupDirs {
+				err := os.Mkdir(filepath.Join(tmpDir, createDir), 0700)
+				if err != nil {
+					t.Errorf("Unable to setup test config directory: %s", err)
+				}
 			}
-			f.Close()
-		}
 
-		if test.resetDir == "" {
-			test.resetDir = "pki"
-		}
-		resetConfigDir(tmpDir, filepath.Join(tmpDir, test.resetDir))
+			for _, createFile := range test.setupFiles {
+				fullPath := filepath.Join(tmpDir, createFile)
+				f, err := os.Create(fullPath)
+				if err != nil {
+					t.Errorf("Unable to create test file: %s", err)
+				}
+				f.Close()
+			}
 
-		// Verify the files we cleanup implicitly in every test:
-		assertExists(t, tmpDir)
-		assertNotExists(t, filepath.Join(tmpDir, kubeadmconstants.AdminKubeConfigFileName))
-		assertNotExists(t, filepath.Join(tmpDir, kubeadmconstants.KubeletKubeConfigFileName))
-		assertDirEmpty(t, filepath.Join(tmpDir, "manifests"))
-		assertDirEmpty(t, filepath.Join(tmpDir, "pki"))
+			if test.resetDir == "" {
+				test.resetDir = "pki"
+			}
+			resetConfigDir(tmpDir, filepath.Join(tmpDir, test.resetDir))
 
-		// Verify the files as requested by the test:
-		for _, path := range test.verifyExists {
-			assertExists(t, filepath.Join(tmpDir, path))
-		}
-		for _, path := range test.verifyNotExists {
-			assertNotExists(t, filepath.Join(tmpDir, path))
-		}
+			// Verify the files we cleanup implicitly in every test:
+			assertExists(t, tmpDir)
+			assertNotExists(t, filepath.Join(tmpDir, kubeadmconstants.AdminKubeConfigFileName))
+			assertNotExists(t, filepath.Join(tmpDir, kubeadmconstants.KubeletKubeConfigFileName))
+			assertDirEmpty(t, filepath.Join(tmpDir, "manifests"))
+			assertDirEmpty(t, filepath.Join(tmpDir, "pki"))
 
-		os.RemoveAll(tmpDir)
+			// Verify the files as requested by the test:
+			for _, path := range test.verifyExists {
+				assertExists(t, filepath.Join(tmpDir, path))
+			}
+			for _, path := range test.verifyNotExists {
+				assertNotExists(t, filepath.Join(tmpDir, path))
+			}
+
+			os.RemoveAll(tmpDir)
+		})
 	}
 }
 
@@ -233,4 +267,84 @@ func TestRemoveContainers(t *testing.T) {
 	}
 
 	removeContainers(&fexec, "unix:///var/run/crio/crio.sock")
+}
+
+func TestGetEtcdDataDir(t *testing.T) {
+	tests := map[string]struct {
+		dataDir       string
+		podYaml       string
+		expectErr     bool
+		writeManifest bool
+		validClient   bool
+	}{
+		"non-existent file returns error": {
+			expectErr:     true,
+			writeManifest: false,
+			validClient:   true,
+		},
+		"return etcd data dir": {
+			dataDir:       "/path/to/etcd",
+			podYaml:       etcdPod,
+			expectErr:     false,
+			writeManifest: true,
+			validClient:   true,
+		},
+		"invalid etcd pod": {
+			podYaml:       etcdPodInvalid,
+			expectErr:     true,
+			writeManifest: true,
+			validClient:   true,
+		},
+		"etcd pod spec without data volume": {
+			podYaml:       etcdPodWithoutDataVolume,
+			expectErr:     true,
+			writeManifest: true,
+			validClient:   true,
+		},
+		"kubeconfig file doesn't exist": {
+			dataDir:       "/path/to/etcd",
+			podYaml:       etcdPod,
+			expectErr:     false,
+			writeManifest: true,
+			validClient:   false,
+		},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			tmpdir := testutil.SetupTempDir(t)
+			defer os.RemoveAll(tmpdir)
+
+			manifestPath := filepath.Join(tmpdir, "etcd.yaml")
+			if test.writeManifest {
+				err := ioutil.WriteFile(manifestPath, []byte(test.podYaml), 0644)
+				if err != nil {
+					t.Fatalf(dedent.Dedent("failed to write pod manifest\n%s\n\tfatal error: %v"), name, err)
+				}
+			}
+
+			var dataDir string
+			var err error
+			if test.validClient {
+				client := clientsetfake.NewSimpleClientset()
+				dataDir, err = getEtcdDataDir(manifestPath, client)
+			} else {
+				dataDir, err = getEtcdDataDir(manifestPath, nil)
+			}
+
+			if (err != nil) != test.expectErr {
+				t.Fatalf(dedent.Dedent(
+					"getEtcdDataDir failed\n%s\nexpected error: %t\n\tgot: %t\nerror: %v"),
+					name,
+					test.expectErr,
+					(err != nil),
+					err,
+				)
+			}
+
+			if dataDir != test.dataDir {
+				t.Fatalf(dedent.Dedent("getEtcdDataDir failed\n%s\n\texpected: %s\ngot: %s"), name, test.dataDir, dataDir)
+			}
+		})
+	}
 }

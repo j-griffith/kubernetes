@@ -26,18 +26,19 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/golang/glog"
+	apps "k8s.io/api/apps/v1"
 	"k8s.io/api/core/v1"
-	"k8s.io/api/extensions/v1beta1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	genericfeatures "k8s.io/apiserver/pkg/features"
+	"k8s.io/apiserver/pkg/features"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	utilfeaturetesting "k8s.io/apiserver/pkg/util/feature/testing"
 	clientset "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/pager"
+	"k8s.io/klog"
 	"k8s.io/kubernetes/pkg/api/testapi"
 	api "k8s.io/kubernetes/pkg/apis/core"
 	"k8s.io/kubernetes/pkg/master"
@@ -68,7 +69,7 @@ func verifyStatusCode(t *testing.T, verb, URL, body string, expectedStatusCode i
 		t.Fatalf("unexpected error: %v in sending req with verb: %s, URL: %s and body: %s", err, verb, URL, body)
 	}
 	transport := http.DefaultTransport
-	glog.Infof("Sending request: %v", req)
+	klog.Infof("Sending request: %v", req)
 	resp, err := transport.RoundTrip(req)
 	if err != nil {
 		t.Fatalf("unexpected error: %v in req: %v", err, req)
@@ -85,17 +86,18 @@ func path(resource, namespace, name string) string {
 	return testapi.Extensions.ResourcePath(resource, namespace, name)
 }
 
-func newRS(namespace string) *v1beta1.ReplicaSet {
-	return &v1beta1.ReplicaSet{
+func newRS(namespace string) *apps.ReplicaSet {
+	return &apps.ReplicaSet{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "ReplicaSet",
-			APIVersion: "extensions/v1beta1",
+			APIVersion: "apps/v1",
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:    namespace,
 			GenerateName: "apiserver-test",
 		},
-		Spec: v1beta1.ReplicaSetSpec{
+		Spec: apps.ReplicaSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"name": "test"}},
 			Template: v1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{"name": "test"},
@@ -129,7 +131,7 @@ func Test202StatusCode(t *testing.T) {
 	ns := framework.CreateTestingNamespace("status-code", s, t)
 	defer framework.DeleteTestingNamespace(ns, s, t)
 
-	rsClient := clientSet.ExtensionsV1beta1().ReplicaSets(ns.Name)
+	rsClient := clientSet.AppsV1().ReplicaSets(ns.Name)
 
 	// 1. Create the resource without any finalizer and then delete it without setting DeleteOptions.
 	// Verify that server returns 200 in this case.
@@ -170,16 +172,14 @@ func Test202StatusCode(t *testing.T) {
 }
 
 func TestAPIListChunking(t *testing.T) {
-	if err := utilfeature.DefaultFeatureGate.Set(string(genericfeatures.APIListChunking) + "=true"); err != nil {
-		t.Fatal(err)
-	}
+	defer utilfeaturetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.APIListChunking, true)()
 	s, clientSet, closeFn := setup(t)
 	defer closeFn()
 
 	ns := framework.CreateTestingNamespace("list-paging", s, t)
 	defer framework.DeleteTestingNamespace(ns, s, t)
 
-	rsClient := clientSet.ExtensionsV1beta1().ReplicaSets(ns.Name)
+	rsClient := clientSet.AppsV1().ReplicaSets(ns.Name)
 
 	for i := 0; i < 4; i++ {
 		rs := newRS(ns.Name)
@@ -228,7 +228,7 @@ func TestAPIListChunking(t *testing.T) {
 	}
 	var names []string
 	if err := meta.EachListItem(listObj, func(obj runtime.Object) error {
-		rs := obj.(*v1beta1.ReplicaSet)
+		rs := obj.(*apps.ReplicaSet)
 		names = append(names, rs.Name)
 		return nil
 	}); err != nil {

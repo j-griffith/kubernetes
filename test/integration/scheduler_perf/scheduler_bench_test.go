@@ -28,7 +28,7 @@ import (
 	"k8s.io/kubernetes/test/integration/framework"
 	testutils "k8s.io/kubernetes/test/utils"
 
-	"github.com/golang/glog"
+	"k8s.io/klog"
 )
 
 var (
@@ -43,6 +43,7 @@ func BenchmarkScheduling(b *testing.B) {
 		{nodes: 100, existingPods: 1000, minPods: 100},
 		{nodes: 1000, existingPods: 0, minPods: 100},
 		{nodes: 1000, existingPods: 1000, minPods: 100},
+		{nodes: 5000, existingPods: 1000, minPods: 1000},
 	}
 	setupStrategy := testutils.NewSimpleWithControllerCreatePodStrategy("rc1")
 	testStrategy := testutils.NewSimpleWithControllerCreatePodStrategy("rc2")
@@ -62,6 +63,7 @@ func BenchmarkSchedulingPodAntiAffinity(b *testing.B) {
 		{nodes: 500, existingPods: 250, minPods: 250},
 		{nodes: 500, existingPods: 5000, minPods: 250},
 		{nodes: 1000, existingPods: 1000, minPods: 500},
+		{nodes: 5000, existingPods: 1000, minPods: 1000},
 	}
 	// The setup strategy creates pods with no affinity rules.
 	setupStrategy := testutils.NewSimpleWithControllerCreatePodStrategy("setup")
@@ -86,6 +88,7 @@ func BenchmarkSchedulingPodAffinity(b *testing.B) {
 		{nodes: 500, existingPods: 250, minPods: 250},
 		{nodes: 500, existingPods: 5000, minPods: 250},
 		{nodes: 1000, existingPods: 1000, minPods: 500},
+		{nodes: 5000, existingPods: 1000, minPods: 1000},
 	}
 	// The setup strategy creates pods with no affinity rules.
 	setupStrategy := testutils.NewSimpleWithControllerCreatePodStrategy("setup")
@@ -112,6 +115,7 @@ func BenchmarkSchedulingNodeAffinity(b *testing.B) {
 		{nodes: 500, existingPods: 250, minPods: 250},
 		{nodes: 500, existingPods: 5000, minPods: 250},
 		{nodes: 1000, existingPods: 1000, minPods: 500},
+		{nodes: 5000, existingPods: 1000, minPods: 1000},
 	}
 	// The setup strategy creates pods with no affinity rules.
 	setupStrategy := testutils.NewSimpleWithControllerCreatePodStrategy("setup")
@@ -227,7 +231,7 @@ func benchmarkScheduling(numNodes, numExistingPods, minPods int,
 		"scheduler-perf-",
 	)
 	if err := nodePreparer.PrepareNodes(); err != nil {
-		glog.Fatalf("%v", err)
+		klog.Fatalf("%v", err)
 	}
 	defer nodePreparer.CleanupNodes()
 
@@ -239,7 +243,7 @@ func benchmarkScheduling(numNodes, numExistingPods, minPods int,
 	for {
 		scheduled, err := schedulerConfigFactory.GetScheduledPodLister().List(labels.Everything())
 		if err != nil {
-			glog.Fatalf("%v", err)
+			klog.Fatalf("%v", err)
 		}
 		if len(scheduled) >= numExistingPods {
 			break
@@ -257,7 +261,7 @@ func benchmarkScheduling(numNodes, numExistingPods, minPods int,
 		// TODO: Setup watch on apiserver and wait until all pods scheduled.
 		scheduled, err := schedulerConfigFactory.GetScheduledPodLister().List(labels.Everything())
 		if err != nil {
-			glog.Fatalf("%v", err)
+			klog.Fatalf("%v", err)
 		}
 		if len(scheduled) >= numExistingPods+b.N {
 			break

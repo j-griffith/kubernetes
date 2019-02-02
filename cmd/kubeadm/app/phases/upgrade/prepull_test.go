@@ -17,9 +17,10 @@ limitations under the License.
 package upgrade
 
 import (
-	"fmt"
 	"testing"
 	"time"
+
+	"github.com/pkg/errors"
 
 	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	//"k8s.io/apimachinery/pkg/util/version"
@@ -34,7 +35,7 @@ func NewFailedCreatePrepuller() Prepuller {
 
 func (p *failedCreatePrepuller) CreateFunc(component string) error {
 	if component == "kube-controller-manager" {
-		return fmt.Errorf("boo")
+		return errors.New("boo")
 	}
 	return nil
 }
@@ -79,7 +80,7 @@ func (p *failedDeletePrepuller) WaitFunc(component string) {}
 
 func (p *failedDeletePrepuller) DeleteFunc(component string) error {
 	if component == "kube-scheduler" {
-		return fmt.Errorf("boo")
+		return errors.New("boo")
 	}
 	return nil
 }
@@ -107,26 +108,31 @@ func (p *goodPrepuller) DeleteFunc(component string) error {
 
 func TestPrepullImagesInParallel(t *testing.T) {
 	tests := []struct {
+		name        string
 		p           Prepuller
 		timeout     time.Duration
 		expectedErr bool
 	}{
-		{ // should error out; create failed
+		{
+			name:        "should error out; create failed",
 			p:           NewFailedCreatePrepuller(),
 			timeout:     10 * time.Second,
 			expectedErr: true,
 		},
-		{ // should error out; timeout exceeded
+		{
+			name:        "should error out; timeout exceeded",
 			p:           NewForeverWaitPrepuller(),
 			timeout:     10 * time.Second,
 			expectedErr: true,
 		},
-		{ // should error out; delete failed
+		{
+			name:        "should error out; delete failed",
 			p:           NewFailedDeletePrepuller(),
 			timeout:     10 * time.Second,
 			expectedErr: true,
 		},
-		{ // should work just fine
+		{
+			name:        "should work just fine",
 			p:           NewGoodPrepuller(),
 			timeout:     10 * time.Second,
 			expectedErr: false,
@@ -134,14 +140,15 @@ func TestPrepullImagesInParallel(t *testing.T) {
 	}
 
 	for _, rt := range tests {
-
-		actualErr := PrepullImagesInParallel(rt.p, rt.timeout, append(constants.MasterComponents, constants.Etcd))
-		if (actualErr != nil) != rt.expectedErr {
-			t.Errorf(
-				"failed TestPrepullImagesInParallel\n\texpected error: %t\n\tgot: %t",
-				rt.expectedErr,
-				(actualErr != nil),
-			)
-		}
+		t.Run(rt.name, func(t *testing.T) {
+			actualErr := PrepullImagesInParallel(rt.p, rt.timeout, append(constants.MasterComponents, constants.Etcd))
+			if (actualErr != nil) != rt.expectedErr {
+				t.Errorf(
+					"failed TestPrepullImagesInParallel\n\texpected error: %t\n\tgot: %t",
+					rt.expectedErr,
+					(actualErr != nil),
+				)
+			}
+		})
 	}
 }

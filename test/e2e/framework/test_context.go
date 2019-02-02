@@ -23,13 +23,13 @@ import (
 	"os"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/onsi/ginkgo/config"
 	"github.com/pkg/errors"
 	utilflag "k8s.io/apiserver/pkg/util/flag"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	"k8s.io/klog"
 	kubeletconfig "k8s.io/kubernetes/pkg/kubelet/apis/config"
 )
 
@@ -115,6 +115,7 @@ type TestContextType struct {
 	GatherLogsSizes                   bool
 	GatherMetricsAfterTest            string
 	GatherSuiteMetricsAfterTest       bool
+	MaxNodesToGather                  int
 	AllowGatheringProfiles            bool
 	// If set to 'true' framework will gather ClusterAutoscaler metrics when gathering them for other components.
 	IncludeClusterAutoscalerMetrics bool
@@ -145,6 +146,29 @@ type TestContextType struct {
 
 	// Indicates what path the kubernetes-anywhere is installed on
 	KubernetesAnywherePath string
+
+	// The DNS Domain of the cluster.
+	ClusterDNSDomain string
+
+	// The configration of NodeKiller.
+	NodeKiller NodeKillerConfig
+}
+
+// NodeKillerConfig describes configuration of NodeKiller -- a utility to
+// simulate node failures.
+type NodeKillerConfig struct {
+	// Enabled determines whether NodeKill should do anything at all.
+	// All other options below are ignored if Enabled = false.
+	Enabled bool
+	// FailureRatio is a percentage of all nodes that could fail simultinously.
+	FailureRatio float64
+	// Interval is time between node failures.
+	Interval time.Duration
+	// JitterFactor is factor used to jitter node failures.
+	// Node will be killed between [Interval, Interval + (1.0 + JitterFactor)].
+	JitterFactor float64
+	// SimulatedDowntime is a duration between node is killed and recreated.
+	SimulatedDowntime time.Duration
 }
 
 // NodeTestContextType is part of TestContextType, it is shared by all node e2e test.
@@ -203,6 +227,7 @@ func RegisterCommonFlags() {
 
 	flag.StringVar(&TestContext.GatherKubeSystemResourceUsageData, "gather-resource-usage", "false", "If set to 'true' or 'all' framework will be monitoring resource usage of system all add-ons in (some) e2e tests, if set to 'master' framework will be monitoring master node only, if set to 'none' of 'false' monitoring will be turned off.")
 	flag.BoolVar(&TestContext.GatherLogsSizes, "gather-logs-sizes", false, "If set to true framework will be monitoring logs sizes on all machines running e2e tests.")
+	flag.IntVar(&TestContext.MaxNodesToGather, "max-nodes-to-gather-from", 20, "The maximum number of nodes to gather extended info from on test failure.")
 	flag.StringVar(&TestContext.GatherMetricsAfterTest, "gather-metrics-at-teardown", "false", "If set to 'true' framework will gather metrics from all components after each test. If set to 'master' only master component metrics would be gathered.")
 	flag.BoolVar(&TestContext.GatherSuiteMetricsAfterTest, "gather-suite-metrics-at-teardown", false, "If set to true framwork will gather metrics from all components after the whole test suite completes.")
 	flag.BoolVar(&TestContext.AllowGatheringProfiles, "allow-gathering-profiles", true, "If set to true framework will allow to gather CPU/memory allocation pprof profiles from the master.")
@@ -248,11 +273,12 @@ func RegisterClusterFlags() {
 	flag.StringVar(&TestContext.NodeOSDistro, "node-os-distro", "debian", "The OS distribution of cluster VM instances (debian, ubuntu, gci, coreos, or custom).")
 	flag.StringVar(&TestContext.ClusterMonitoringMode, "cluster-monitoring-mode", "standalone", "The monitoring solution that is used in the cluster.")
 	flag.BoolVar(&TestContext.EnablePrometheusMonitoring, "prometheus-monitoring", false, "Separate Prometheus monitoring deployed in cluster.")
+	flag.StringVar(&TestContext.ClusterDNSDomain, "dns-domain", "cluster.local", "The DNS Domain of the cluster.")
 
 	// TODO: Flags per provider?  Rename gce-project/gce-zone?
 	cloudConfig := &TestContext.CloudConfig
 	flag.StringVar(&cloudConfig.MasterName, "kube-master", "", "Name of the kubernetes master. Only required if provider is gce or gke")
-	flag.StringVar(&cloudConfig.ApiEndpoint, "gce-api-endpoint", "", "The GCE ApiEndpoint being used, if applicable")
+	flag.StringVar(&cloudConfig.ApiEndpoint, "gce-api-endpoint", "", "The GCE APIEndpoint being used, if applicable")
 	flag.StringVar(&cloudConfig.ProjectID, "gce-project", "", "The GCE project being used, if applicable")
 	flag.StringVar(&cloudConfig.Zone, "gce-zone", "", "GCE zone being used, if applicable")
 	flag.StringVar(&cloudConfig.Region, "gce-region", "", "GCE region being used, if applicable")
@@ -277,6 +303,13 @@ func RegisterClusterFlags() {
 	flag.StringVar(&TestContext.IngressUpgradeImage, "ingress-upgrade-image", "", "Image to upgrade to if doing an upgrade test for ingress.")
 	flag.StringVar(&TestContext.GCEUpgradeScript, "gce-upgrade-script", "", "Script to use to upgrade a GCE cluster.")
 	flag.BoolVar(&TestContext.CleanStart, "clean-start", false, "If true, purge all namespaces except default and system before running tests. This serves to Cleanup test namespaces from failed/interrupted e2e runs in a long-lived cluster.")
+
+	nodeKiller := &TestContext.NodeKiller
+	flag.BoolVar(&nodeKiller.Enabled, "node-killer", false, "Whether NodeKiller should kill any nodes.")
+	flag.Float64Var(&nodeKiller.FailureRatio, "node-killer-failure-ratio", 0.01, "Percentage of nodes to be killed")
+	flag.DurationVar(&nodeKiller.Interval, "node-killer-interval", 1*time.Minute, "Time between node failures.")
+	flag.Float64Var(&nodeKiller.JitterFactor, "node-killer-jitter-factor", 60, "Factor used to jitter node failures.")
+	flag.DurationVar(&nodeKiller.SimulatedDowntime, "node-killer-simulated-downtime", 10*time.Minute, "A delay between node death and recreation")
 }
 
 // Register flags specific to the node e2e test suite.
@@ -311,7 +344,8 @@ func createKubeConfig(clientCfg *restclient.Config) *clientcmdapi.Config {
 	config := clientcmdapi.NewConfig()
 
 	credentials := clientcmdapi.NewAuthInfo()
-	credentials.TokenFile = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+	credentials.Token = clientCfg.BearerToken
+	credentials.TokenFile = clientCfg.BearerTokenFile
 	credentials.ClientCertificate = clientCfg.TLSClientConfig.CertFile
 	if len(credentials.ClientCertificate) == 0 {
 		credentials.ClientCertificateData = clientCfg.TLSClientConfig.CertData
@@ -351,11 +385,11 @@ func AfterReadingAllFlags(t *TestContextType) {
 				kubeConfig := createKubeConfig(clusterConfig)
 				clientcmd.WriteToFile(*kubeConfig, tempFile.Name())
 				t.KubeConfig = tempFile.Name()
-				glog.Infof("Using a temporary kubeconfig file from in-cluster config : %s", tempFile.Name())
+				klog.Infof("Using a temporary kubeconfig file from in-cluster config : %s", tempFile.Name())
 			}
 		}
 		if len(t.KubeConfig) == 0 {
-			glog.Warningf("Unable to find in-cluster config, using default host : %s", defaultHost)
+			klog.Warningf("Unable to find in-cluster config, using default host : %s", defaultHost)
 			t.Host = defaultHost
 		}
 	}
@@ -378,7 +412,7 @@ func AfterReadingAllFlags(t *TestContextType) {
 	// TODO (https://github.com/kubernetes/kubernetes/issues/70200):
 	// - remove the fallback for unknown providers
 	// - proper error message instead of Failf (which panics)
-	glog.Warningf("Unknown provider %q, proceeding as for --provider=skeleton.", TestContext.Provider)
+	klog.Warningf("Unknown provider %q, proceeding as for --provider=skeleton.", TestContext.Provider)
 	TestContext.CloudConfig.Provider, err = SetupProviderConfig("skeleton")
 	if err != nil {
 		Failf("Failed to setup fallback skeleton provider config: %v", err)

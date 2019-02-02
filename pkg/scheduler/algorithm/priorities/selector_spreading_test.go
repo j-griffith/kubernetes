@@ -26,7 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/api"
-	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
+	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 	schedulertesting "k8s.io/kubernetes/pkg/scheduler/testing"
 )
 
@@ -339,7 +339,7 @@ func TestSelectorSpreadPriority(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			nodeNameToInfo := schedulercache.CreateNodeNameToInfoMap(test.pods, makeNodeList(test.nodes))
+			nodeNameToInfo := schedulernodeinfo.CreateNodeNameToInfoMap(test.pods, makeNodeList(test.nodes))
 			selectorSpread := SelectorSpread{
 				serviceLister:     schedulertesting.FakeServiceLister(test.services),
 				controllerLister:  schedulertesting.FakeControllerLister(test.rcs),
@@ -347,14 +347,14 @@ func TestSelectorSpreadPriority(t *testing.T) {
 				statefulSetLister: schedulertesting.FakeStatefulSetLister(test.sss),
 			}
 
-			mataDataProducer := NewPriorityMetadataFactory(
+			metaDataProducer := NewPriorityMetadataFactory(
 				schedulertesting.FakeServiceLister(test.services),
 				schedulertesting.FakeControllerLister(test.rcs),
 				schedulertesting.FakeReplicaSetLister(test.rss),
 				schedulertesting.FakeStatefulSetLister(test.sss))
-			mataData := mataDataProducer(test.pod, nodeNameToInfo)
+			metaData := metaDataProducer(test.pod, nodeNameToInfo)
 
-			ttp := priorityFunction(selectorSpread.CalculateSpreadPriorityMap, selectorSpread.CalculateSpreadPriorityReduce, mataData)
+			ttp := priorityFunction(selectorSpread.CalculateSpreadPriorityMap, selectorSpread.CalculateSpreadPriorityReduce, metaData)
 			list, err := ttp(test.pod, nodeNameToInfo, makeNodeList(test.nodes))
 			if err != nil {
 				t.Errorf("unexpected error: %v \n", err)
@@ -575,7 +575,7 @@ func TestZoneSelectorSpreadPriority(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			nodeNameToInfo := schedulercache.CreateNodeNameToInfoMap(test.pods, makeLabeledNodeList(labeledNodes))
+			nodeNameToInfo := schedulernodeinfo.CreateNodeNameToInfoMap(test.pods, makeLabeledNodeList(labeledNodes))
 			selectorSpread := SelectorSpread{
 				serviceLister:     schedulertesting.FakeServiceLister(test.services),
 				controllerLister:  schedulertesting.FakeControllerLister(test.rcs),
@@ -583,13 +583,13 @@ func TestZoneSelectorSpreadPriority(t *testing.T) {
 				statefulSetLister: schedulertesting.FakeStatefulSetLister(test.sss),
 			}
 
-			mataDataProducer := NewPriorityMetadataFactory(
+			metaDataProducer := NewPriorityMetadataFactory(
 				schedulertesting.FakeServiceLister(test.services),
 				schedulertesting.FakeControllerLister(test.rcs),
 				schedulertesting.FakeReplicaSetLister(test.rss),
 				schedulertesting.FakeStatefulSetLister(test.sss))
-			mataData := mataDataProducer(test.pod, nodeNameToInfo)
-			ttp := priorityFunction(selectorSpread.CalculateSpreadPriorityMap, selectorSpread.CalculateSpreadPriorityReduce, mataData)
+			metaData := metaDataProducer(test.pod, nodeNameToInfo)
+			ttp := priorityFunction(selectorSpread.CalculateSpreadPriorityMap, selectorSpread.CalculateSpreadPriorityReduce, metaData)
 			list, err := ttp(test.pod, nodeNameToInfo, makeLabeledNodeList(labeledNodes))
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)
@@ -760,23 +760,23 @@ func TestZoneSpreadPriority(t *testing.T) {
 		},
 	}
 	// these local variables just make sure controllerLister\replicaSetLister\statefulSetLister not nil
-	// when construct mataDataProducer
+	// when construct metaDataProducer
 	sss := []*apps.StatefulSet{{Spec: apps.StatefulSetSpec{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"foo": "bar"}}}}}
 	rcs := []*v1.ReplicationController{{Spec: v1.ReplicationControllerSpec{Selector: map[string]string{"foo": "bar"}}}}
 	rss := []*apps.ReplicaSet{{Spec: apps.ReplicaSetSpec{Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"foo": "bar"}}}}}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			nodeNameToInfo := schedulercache.CreateNodeNameToInfoMap(test.pods, makeLabeledNodeList(test.nodes))
+			nodeNameToInfo := schedulernodeinfo.CreateNodeNameToInfoMap(test.pods, makeLabeledNodeList(test.nodes))
 			zoneSpread := ServiceAntiAffinity{podLister: schedulertesting.FakePodLister(test.pods), serviceLister: schedulertesting.FakeServiceLister(test.services), label: "zone"}
 
-			mataDataProducer := NewPriorityMetadataFactory(
+			metaDataProducer := NewPriorityMetadataFactory(
 				schedulertesting.FakeServiceLister(test.services),
 				schedulertesting.FakeControllerLister(rcs),
 				schedulertesting.FakeReplicaSetLister(rss),
 				schedulertesting.FakeStatefulSetLister(sss))
-			mataData := mataDataProducer(test.pod, nodeNameToInfo)
-			ttp := priorityFunction(zoneSpread.CalculateAntiAffinityPriorityMap, zoneSpread.CalculateAntiAffinityPriorityReduce, mataData)
+			metaData := metaDataProducer(test.pod, nodeNameToInfo)
+			ttp := priorityFunction(zoneSpread.CalculateAntiAffinityPriorityMap, zoneSpread.CalculateAntiAffinityPriorityReduce, metaData)
 			list, err := ttp(test.pod, nodeNameToInfo, makeLabeledNodeList(test.nodes))
 			if err != nil {
 				t.Errorf("unexpected error: %v", err)

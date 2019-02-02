@@ -569,7 +569,7 @@
         "paramType": "body",
         "name": "body",
         "description": "",
-        "required": true,
+        "required": false,
         "allowMultiple": false
        },
        {
@@ -1308,7 +1308,7 @@
         "paramType": "body",
         "name": "body",
         "description": "",
-        "required": true,
+        "required": false,
         "allowMultiple": false
        },
        {
@@ -1692,7 +1692,7 @@
    },
    "v1.OwnerReference": {
     "id": "v1.OwnerReference",
-    "description": "OwnerReference contains enough information to let you identify an owning object. Currently, an owning object must be in the same namespace, so there is no namespace field.",
+    "description": "OwnerReference contains enough information to let you identify an owning object. An owning object must be in the same namespace as the dependent, or be cluster-scoped, so there is no namespace field.",
     "required": [
      "apiVersion",
      "kind",
@@ -2093,7 +2093,7 @@
      },
      "message": {
       "type": "string",
-      "description": "String detailing the error encountered during Attach or Detach operation. This string maybe logged, so it should not contain sensitive information."
+      "description": "String detailing the error encountered during Attach or Detach operation. This string may be logged, so it should not contain sensitive information."
      }
     }
    },

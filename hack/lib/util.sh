@@ -441,28 +441,28 @@ kube::util::ensure_clean_working_dir() {
 
 # Ensure that the given godep version is installed and in the path.  Almost
 # nobody should use any version but the default.
+#
+# Sets:
+#  KUBE_GODEP: The path to the godep binary
+#
 kube::util::ensure_godep_version() {
-  GODEP_VERSION=${1:-"v80"} # this version is known to work
+  local godep_target_version=${1:-"v80-k8s-r1"} # this version is known to work
 
-  if [[ "$(godep version 2>/dev/null)" == *"godep ${GODEP_VERSION}"* ]]; then
+  # If KUBE_GODEP is already set, and it's the right version, then use it.
+  if [[ -n "${KUBE_GODEP:-}" && "$(${KUBE_GODEP:?} version 2>/dev/null)" == *"godep ${godep_target_version}"* ]]; then
+    kube::log::status "Using ${KUBE_GODEP}"
     return
   fi
 
-  kube::log::status "Installing godep version ${GODEP_VERSION}"
-  go install k8s.io/kubernetes/vendor/github.com/tools/godep/
-  if ! which godep >/dev/null 2>&1; then
-    kube::log::error "Can't find godep - is your GOPATH 'bin' in your PATH?"
-    kube::log::error "  GOPATH: ${GOPATH}"
-    kube::log::error "  PATH:   ${PATH}"
-    return 1
-  fi
+  # Otherwise, install forked godep
+  kube::log::status "Installing godep version ${godep_target_version}"
+  GOBIN="${KUBE_OUTPUT_BINPATH}" go install k8s.io/kubernetes/third_party/forked/godep
+  export KUBE_GODEP="${KUBE_OUTPUT_BINPATH}/godep"
+  kube::log::status "Installed ${KUBE_GODEP}"
 
-  if [[ "$(godep version 2>/dev/null)" != *"godep ${GODEP_VERSION}"* ]]; then
-    kube::log::error "Wrong godep version - is your GOPATH 'bin' in your PATH?"
-    kube::log::error "  expected: godep ${GODEP_VERSION}"
-    kube::log::error "  got:      $(godep version)"
-    kube::log::error "  GOPATH: ${GOPATH}"
-    kube::log::error "  PATH:   ${PATH}"
+  # Verify that the installed godep from fork is what we expect
+  if [[ "$(${KUBE_GODEP:?} version 2>/dev/null)" != *"godep ${godep_target_version}"* ]]; then
+    kube::log::error "Expected godep ${godep_target_version} from ${KUBE_GODEP}, got $(${KUBE_GODEP:?} version)"
     return 1
   fi
 }
@@ -496,25 +496,42 @@ kube::util::ensure_single_dir_gopath() {
   fi
 }
 
-# Checks whether there are any files matching pattern $2 changed between the
-# current branch and upstream branch named by $1.
-# Returns 1 (false) if there are no changes, 0 (true) if there are changes
-# detected.
-kube::util::has_changes_against_upstream_branch() {
+# Find the base commit using:
+# $PULL_BASE_SHA if set (from Prow)
+# current ref from the remote upstream branch
+kube::util::base_ref() {
   local -r git_branch=$1
-  local -r pattern=$2
-  local -r not_pattern=${3:-totallyimpossiblepattern}
-  local full_branch
+
+  if [[ -n ${PULL_BASE_SHA:-} ]]; then
+    echo "${PULL_BASE_SHA}"
+    return
+  fi
 
   full_branch="$(kube::util::git_upstream_remote_name)/${git_branch}"
-  echo "Checking for '${pattern}' changes against '${full_branch}'"
+  
   # make sure the branch is valid, otherwise the check will pass erroneously.
   if ! git describe "${full_branch}" >/dev/null; then
     # abort!
     exit 1
   fi
+
+  echo "${full_branch}"
+}
+
+# Checks whether there are any files matching pattern $2 changed between the
+# current branch and upstream branch named by $1.
+# Returns 1 (false) if there are no changes
+#         0 (true) if there are changes detected.
+kube::util::has_changes() {
+  local -r git_branch=$1
+  local -r pattern=$2
+  local -r not_pattern=${3:-totallyimpossiblepattern}
+  
+  local base_ref=$(kube::util::base_ref "${git_branch}")
+  echo "Checking for '${pattern}' changes against '${base_ref}'"
+
   # notice this uses ... to find the first shared ancestor
-  if git diff --name-only "${full_branch}...HEAD" | grep -v -E "${not_pattern}" | grep "${pattern}" > /dev/null; then
+  if git diff --name-only "${base_ref}...HEAD" | grep -v -E "${not_pattern}" | grep "${pattern}" > /dev/null; then
     return 0
   fi
   # also check for pending changes

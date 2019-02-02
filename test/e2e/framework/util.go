@@ -41,9 +41,9 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/golang/glog"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/net/websocket"
+	"k8s.io/klog"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -91,7 +91,7 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/util/format"
 	"k8s.io/kubernetes/pkg/master/ports"
 	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
-	schedulercache "k8s.io/kubernetes/pkg/scheduler/cache"
+	schedulernodeinfo "k8s.io/kubernetes/pkg/scheduler/nodeinfo"
 	sshutil "k8s.io/kubernetes/pkg/ssh"
 	"k8s.io/kubernetes/pkg/util/system"
 	taintutils "k8s.io/kubernetes/pkg/util/taints"
@@ -286,95 +286,99 @@ func FailfWithOffset(offset int, format string, args ...interface{}) {
 	ginkgowrapper.Fail(nowStamp()+": "+msg, 1+offset)
 }
 
-func Skipf(format string, args ...interface{}) {
+func skipInternalf(caller int, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	log("INFO", msg)
-	ginkgowrapper.Skip(nowStamp() + ": " + msg)
+	ginkgowrapper.Skip(msg, caller+1)
+}
+
+func Skipf(format string, args ...interface{}) {
+	skipInternalf(1, format, args...)
 }
 
 func SkipUnlessNodeCountIsAtLeast(minNodeCount int) {
 	if TestContext.CloudConfig.NumNodes < minNodeCount {
-		Skipf("Requires at least %d nodes (not %d)", minNodeCount, TestContext.CloudConfig.NumNodes)
+		skipInternalf(1, "Requires at least %d nodes (not %d)", minNodeCount, TestContext.CloudConfig.NumNodes)
 	}
 }
 
 func SkipUnlessNodeCountIsAtMost(maxNodeCount int) {
 	if TestContext.CloudConfig.NumNodes > maxNodeCount {
-		Skipf("Requires at most %d nodes (not %d)", maxNodeCount, TestContext.CloudConfig.NumNodes)
+		skipInternalf(1, "Requires at most %d nodes (not %d)", maxNodeCount, TestContext.CloudConfig.NumNodes)
 	}
 }
 
 func SkipUnlessAtLeast(value int, minValue int, message string) {
 	if value < minValue {
-		Skipf(message)
+		skipInternalf(1, message)
 	}
 }
 
 func SkipIfProviderIs(unsupportedProviders ...string) {
 	if ProviderIs(unsupportedProviders...) {
-		Skipf("Not supported for providers %v (found %s)", unsupportedProviders, TestContext.Provider)
+		skipInternalf(1, "Not supported for providers %v (found %s)", unsupportedProviders, TestContext.Provider)
 	}
 }
 
 func SkipUnlessLocalEphemeralStorageEnabled() {
 	if !utilfeature.DefaultFeatureGate.Enabled(features.LocalStorageCapacityIsolation) {
-		Skipf("Only supported when %v feature is enabled", features.LocalStorageCapacityIsolation)
+		skipInternalf(1, "Only supported when %v feature is enabled", features.LocalStorageCapacityIsolation)
 	}
 }
 
 func SkipUnlessSSHKeyPresent() {
 	if _, err := GetSigner(TestContext.Provider); err != nil {
-		Skipf("No SSH Key for provider %s: '%v'", TestContext.Provider, err)
+		skipInternalf(1, "No SSH Key for provider %s: '%v'", TestContext.Provider, err)
 	}
 }
 
 func SkipUnlessProviderIs(supportedProviders ...string) {
 	if !ProviderIs(supportedProviders...) {
-		Skipf("Only supported for providers %v (not %s)", supportedProviders, TestContext.Provider)
+		skipInternalf(1, "Only supported for providers %v (not %s)", supportedProviders, TestContext.Provider)
 	}
 }
 
 func SkipUnlessMultizone(c clientset.Interface) {
 	zones, err := GetClusterZones(c)
 	if err != nil {
-		Skipf("Error listing cluster zones")
+		skipInternalf(1, "Error listing cluster zones")
 	}
 	if zones.Len() <= 1 {
-		Skipf("Requires more than one zone")
+		skipInternalf(1, "Requires more than one zone")
 	}
 }
 
 func SkipIfMultizone(c clientset.Interface) {
 	zones, err := GetClusterZones(c)
 	if err != nil {
-		Skipf("Error listing cluster zones")
+		skipInternalf(1, "Error listing cluster zones")
 	}
 	if zones.Len() > 1 {
-		Skipf("Requires at most one zone")
+		skipInternalf(1, "Requires at most one zone")
 	}
 }
 
 func SkipUnlessClusterMonitoringModeIs(supportedMonitoring ...string) {
 	if !ClusterMonitoringModeIs(supportedMonitoring...) {
-		Skipf("Only next monitoring modes are supported %v (not %s)", supportedMonitoring, TestContext.ClusterMonitoringMode)
+		skipInternalf(1, "Only next monitoring modes are supported %v (not %s)", supportedMonitoring, TestContext.ClusterMonitoringMode)
 	}
 }
 
 func SkipUnlessPrometheusMonitoringIsEnabled(supportedMonitoring ...string) {
 	if !TestContext.EnablePrometheusMonitoring {
-		Skipf("Skipped because prometheus monitoring is not enabled")
+		skipInternalf(1, "Skipped because prometheus monitoring is not enabled")
 	}
 }
 
 func SkipUnlessMasterOSDistroIs(supportedMasterOsDistros ...string) {
 	if !MasterOSDistroIs(supportedMasterOsDistros...) {
-		Skipf("Only supported for master OS distro %v (not %s)", supportedMasterOsDistros, TestContext.MasterOSDistro)
+		skipInternalf(1, "Only supported for master OS distro %v (not %s)", supportedMasterOsDistros, TestContext.MasterOSDistro)
 	}
 }
 
 func SkipUnlessNodeOSDistroIs(supportedNodeOsDistros ...string) {
 	if !NodeOSDistroIs(supportedNodeOsDistros...) {
-		Skipf("Only supported for node OS distro %v (not %s)", supportedNodeOsDistros, TestContext.NodeOSDistro)
+		skipInternalf(1, "Only supported for node OS distro %v (not %s)", supportedNodeOsDistros, TestContext.NodeOSDistro)
 	}
 }
 
@@ -389,15 +393,21 @@ func SkipUnlessSecretExistsAfterWait(c clientset.Interface, name, namespace stri
 		}
 		return true, nil
 	}) != nil {
-		Skipf("Secret %v in namespace %v did not exist after timeout of %v", name, namespace, timeout)
+		skipInternalf(1, "Secret %v in namespace %v did not exist after timeout of %v", name, namespace, timeout)
 	}
 	Logf("Secret %v in namespace %v found after duration %v", name, namespace, time.Since(start))
+}
+
+func SkipUnlessTaintBasedEvictionsEnabled() {
+	if !utilfeature.DefaultFeatureGate.Enabled(features.TaintBasedEvictions) {
+		skipInternalf(1, "Only supported when %v feature is enabled", features.TaintBasedEvictions)
+	}
 }
 
 func SkipIfContainerRuntimeIs(runtimes ...string) {
 	for _, runtime := range runtimes {
 		if runtime == TestContext.ContainerRuntime {
-			Skipf("Not supported under container runtime %s", runtime)
+			skipInternalf(1, "Not supported under container runtime %s", runtime)
 		}
 	}
 }
@@ -408,7 +418,7 @@ func RunIfContainerRuntimeIs(runtimes ...string) {
 			return
 		}
 	}
-	Skipf("Skipped because container runtime %q is not in %s", TestContext.ContainerRuntime, runtimes)
+	skipInternalf(1, "Skipped because container runtime %q is not in %s", TestContext.ContainerRuntime, runtimes)
 }
 
 func RunIfSystemSpecNameIs(names ...string) {
@@ -417,7 +427,7 @@ func RunIfSystemSpecNameIs(names ...string) {
 			return
 		}
 	}
-	Skipf("Skipped because system spec name %q is not in %v", TestContext.SystemSpecName, names)
+	skipInternalf(1, "Skipped because system spec name %q is not in %v", TestContext.SystemSpecName, names)
 }
 
 func ProviderIs(providers ...string) bool {
@@ -491,7 +501,7 @@ func SkipUnlessServerVersionGTE(v *utilversion.Version, c discovery.ServerVersio
 		Failf("Failed to get server version: %v", err)
 	}
 	if !gte {
-		Skipf("Not supported for server versions before %q", v)
+		skipInternalf(1, "Not supported for server versions before %q", v)
 	}
 }
 
@@ -501,7 +511,7 @@ func SkipIfMissingResource(dynamicClient dynamic.Interface, gvr schema.GroupVers
 	if err != nil {
 		// not all resources support list, so we ignore those
 		if apierrs.IsMethodNotSupported(err) || apierrs.IsNotFound(err) || apierrs.IsForbidden(err) {
-			Skipf("Could not find %s resource, skipping test: %#v", gvr, err)
+			skipInternalf(1, "Could not find %s resource, skipping test: %#v", gvr, err)
 		}
 		Failf("Unexpected error getting %v: %v", gvr, err)
 	}
@@ -656,7 +666,7 @@ func WaitForPodsRunningReady(c clientset.Interface, ns string, minPods, allowedN
 			replicaOk += rc.Status.ReadyReplicas
 		}
 
-		rsList, err := c.ExtensionsV1beta1().ReplicaSets(ns).List(metav1.ListOptions{})
+		rsList, err := c.AppsV1().ReplicaSets(ns).List(metav1.ListOptions{})
 		if err != nil {
 			Logf("Error getting replication sets in namespace %q: %v", ns, err)
 			if testutils.IsRetryableAPIError(err) {
@@ -1010,22 +1020,59 @@ func WaitForPersistentVolumeDeleted(c clientset.Interface, pvName string, Poll, 
 
 // WaitForPersistentVolumeClaimPhase waits for a PersistentVolumeClaim to be in a specific phase or until timeout occurs, whichever comes first.
 func WaitForPersistentVolumeClaimPhase(phase v1.PersistentVolumeClaimPhase, c clientset.Interface, ns string, pvcName string, Poll, timeout time.Duration) error {
-	Logf("Waiting up to %v for PersistentVolumeClaim %s to have phase %s", timeout, pvcName, phase)
+	return WaitForPersistentVolumeClaimsPhase(phase, c, ns, []string{pvcName}, Poll, timeout, true)
+}
+
+// WaitForPersistentVolumeClaimPhase waits for any (if matchAny is true) or all (if matchAny is false) PersistentVolumeClaims
+// to be in a specific phase or until timeout occurs, whichever comes first.
+func WaitForPersistentVolumeClaimsPhase(phase v1.PersistentVolumeClaimPhase, c clientset.Interface, ns string, pvcNames []string, Poll, timeout time.Duration, matchAny bool) error {
+	if len(pvcNames) == 0 {
+		return fmt.Errorf("Incorrect parameter: Need at least one PVC to track. Found 0.")
+	}
+	Logf("Waiting up to %v for PersistentVolumeClaims %v to have phase %s", timeout, pvcNames, phase)
 	for start := time.Now(); time.Since(start) < timeout; time.Sleep(Poll) {
-		pvc, err := c.CoreV1().PersistentVolumeClaims(ns).Get(pvcName, metav1.GetOptions{})
-		if err != nil {
-			Logf("Failed to get claim %q, retrying in %v. Error: %v", pvcName, Poll, err)
-			continue
-		} else {
-			if pvc.Status.Phase == phase {
-				Logf("PersistentVolumeClaim %s found and phase=%s (%v)", pvcName, phase, time.Since(start))
-				return nil
+		phaseFoundInAllClaims := true
+		for _, pvcName := range pvcNames {
+			pvc, err := c.CoreV1().PersistentVolumeClaims(ns).Get(pvcName, metav1.GetOptions{})
+			if err != nil {
+				Logf("Failed to get claim %q, retrying in %v. Error: %v", pvcName, Poll, err)
+				continue
 			} else {
-				Logf("PersistentVolumeClaim %s found but phase is %s instead of %s.", pvcName, pvc.Status.Phase, phase)
+				if pvc.Status.Phase == phase {
+					Logf("PersistentVolumeClaim %s found and phase=%s (%v)", pvcName, phase, time.Since(start))
+					if matchAny {
+						return nil
+					}
+				} else {
+					Logf("PersistentVolumeClaim %s found but phase is %s instead of %s.", pvcName, pvc.Status.Phase, phase)
+					phaseFoundInAllClaims = false
+				}
 			}
 		}
+		if phaseFoundInAllClaims {
+			return nil
+		}
 	}
-	return fmt.Errorf("PersistentVolumeClaim %s not in phase %s within %v", pvcName, phase, timeout)
+	return fmt.Errorf("PersistentVolumeClaims %v not all in phase %s within %v", pvcNames, phase, timeout)
+}
+
+// findAvailableNamespaceName random namespace name starting with baseName.
+func findAvailableNamespaceName(baseName string, c clientset.Interface) (string, error) {
+	var name string
+	err := wait.PollImmediate(Poll, 30*time.Second, func() (bool, error) {
+		name = fmt.Sprintf("%v-%v", baseName, randomSuffix())
+		_, err := c.CoreV1().Namespaces().Get(name, metav1.GetOptions{})
+		if err == nil {
+			// Already taken
+			return false, nil
+		}
+		if apierrs.IsNotFound(err) {
+			return true, nil
+		}
+		Logf("Unexpected error while getting namespace: %v", err)
+		return false, nil
+	})
+	return name, err
 }
 
 // CreateTestingNS should be used by every test, note that we append a common prefix to the provided test name.
@@ -1036,11 +1083,19 @@ func CreateTestingNS(baseName string, c clientset.Interface, labels map[string]s
 	}
 	labels["e2e-run"] = string(RunId)
 
+	// We don't use ObjectMeta.GenerateName feature, as in case of API call
+	// failure we don't know whether the namespace was created and what is its
+	// name.
+	name, err := findAvailableNamespaceName(baseName, c)
+	if err != nil {
+		return nil, err
+	}
+
 	namespaceObj := &v1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName: fmt.Sprintf("e2e-tests-%v-", baseName),
-			Namespace:    "",
-			Labels:       labels,
+			Name:      name,
+			Namespace: "",
+			Labels:    labels,
 		},
 		Status: v1.NamespaceStatus{},
 	}
@@ -1270,6 +1325,7 @@ func hasRemainingContent(c clientset.Interface, dynamicClient dynamic.Interface,
 	if err != nil {
 		return false, err
 	}
+	resources = discovery.FilteredBy(discovery.SupportsAllVerbs{Verbs: []string{"list", "delete"}}, resources)
 	groupVersionResources, err := discovery.GroupVersionResources(resources)
 	if err != nil {
 		return false, err
@@ -1472,10 +1528,12 @@ func eventOccurred(c clientset.Interface, podName, namespace, eventSelector, msg
 		if err != nil {
 			return false, fmt.Errorf("got error while getting pod events: %s", err)
 		}
-		if len(events.Items) == 0 {
-			return false, nil // no events have occurred yet
+		for _, event := range events.Items {
+			if strings.Contains(event.Message, msg) {
+				return true, nil
+			}
 		}
-		return strings.Contains(events.Items[0].Message, msg), nil
+		return false, nil
 	}
 }
 
@@ -1890,7 +1948,7 @@ func SkipUnlessKubectlVersionGTE(v *utilversion.Version) {
 		Failf("Failed to get kubectl version: %v", err)
 	}
 	if !gte {
-		Skipf("Not supported for kubectl versions before %q", v)
+		skipInternalf(1, "Not supported for kubectl versions before %q", v)
 	}
 }
 
@@ -2465,7 +2523,7 @@ func DumpAllNamespaceInfo(c clientset.Interface, namespace string) {
 	// 1. it takes tens of minutes or hours to grab all of them
 	// 2. there are so many of them that working with them are mostly impossible
 	// So we dump them only if the cluster is relatively small.
-	maxNodesForDump := 20
+	maxNodesForDump := TestContext.MaxNodesToGather
 	if nodes, err := c.CoreV1().Nodes().List(metav1.ListOptions{}); err == nil {
 		if len(nodes.Items) <= maxNodesForDump {
 			dumpAllPodInfo(c)
@@ -2629,7 +2687,7 @@ func isNodeUntainted(node *v1.Node) bool {
 			},
 		},
 	}
-	nodeInfo := schedulercache.NewNodeInfo()
+	nodeInfo := schedulernodeinfo.NewNodeInfo()
 	nodeInfo.SetNode(node)
 	fit, _, err := predicates.PodToleratesNodeTaints(fakePod, nil, nodeInfo)
 	if err != nil {
@@ -2708,7 +2766,7 @@ func WaitForAllNodesSchedulable(c clientset.Interface, timeout time.Duration) er
 		// However, we only allow non-ready nodes with some specific reasons.
 		if len(notSchedulable) > 0 {
 			// In large clusters, log them only every 10th pass.
-			if len(nodes.Items) >= largeClusterThreshold && attempt%10 == 0 {
+			if len(nodes.Items) < largeClusterThreshold || attempt%10 == 0 {
 				Logf("Unschedulable nodes:")
 				for i := range notSchedulable {
 					Logf("-> %s Ready=%t Network=%t Taints=%v",
@@ -3035,11 +3093,11 @@ func getRuntimeObjectForKind(c clientset.Interface, kind schema.GroupKind, ns, n
 	case api.Kind("ReplicationController"):
 		return c.CoreV1().ReplicationControllers(ns).Get(name, metav1.GetOptions{})
 	case extensionsinternal.Kind("ReplicaSet"), appsinternal.Kind("ReplicaSet"):
-		return c.ExtensionsV1beta1().ReplicaSets(ns).Get(name, metav1.GetOptions{})
+		return c.AppsV1().ReplicaSets(ns).Get(name, metav1.GetOptions{})
 	case extensionsinternal.Kind("Deployment"), appsinternal.Kind("Deployment"):
-		return c.ExtensionsV1beta1().Deployments(ns).Get(name, metav1.GetOptions{})
+		return c.AppsV1().Deployments(ns).Get(name, metav1.GetOptions{})
 	case extensionsinternal.Kind("DaemonSet"):
-		return c.ExtensionsV1beta1().DaemonSets(ns).Get(name, metav1.GetOptions{})
+		return c.AppsV1().DaemonSets(ns).Get(name, metav1.GetOptions{})
 	case batchinternal.Kind("Job"):
 		return c.BatchV1().Jobs(ns).Get(name, metav1.GetOptions{})
 	default:
@@ -3053,9 +3111,15 @@ func getSelectorFromRuntimeObject(obj runtime.Object) (labels.Selector, error) {
 		return labels.SelectorFromSet(typed.Spec.Selector), nil
 	case *extensions.ReplicaSet:
 		return metav1.LabelSelectorAsSelector(typed.Spec.Selector)
+	case *apps.ReplicaSet:
+		return metav1.LabelSelectorAsSelector(typed.Spec.Selector)
 	case *extensions.Deployment:
 		return metav1.LabelSelectorAsSelector(typed.Spec.Selector)
+	case *apps.Deployment:
+		return metav1.LabelSelectorAsSelector(typed.Spec.Selector)
 	case *extensions.DaemonSet:
+		return metav1.LabelSelectorAsSelector(typed.Spec.Selector)
+	case *apps.DaemonSet:
 		return metav1.LabelSelectorAsSelector(typed.Spec.Selector)
 	case *batch.Job:
 		return metav1.LabelSelectorAsSelector(typed.Spec.Selector)
@@ -3076,12 +3140,24 @@ func getReplicasFromRuntimeObject(obj runtime.Object) (int32, error) {
 			return *typed.Spec.Replicas, nil
 		}
 		return 0, nil
+	case *apps.ReplicaSet:
+		if typed.Spec.Replicas != nil {
+			return *typed.Spec.Replicas, nil
+		}
+		return 0, nil
 	case *extensions.Deployment:
 		if typed.Spec.Replicas != nil {
 			return *typed.Spec.Replicas, nil
 		}
 		return 0, nil
+	case *apps.Deployment:
+		if typed.Spec.Replicas != nil {
+			return *typed.Spec.Replicas, nil
+		}
+		return 0, nil
 	case *extensions.DaemonSet:
+		return 0, nil
+	case *apps.DaemonSet:
 		return 0, nil
 	case *batch.Job:
 		// TODO: currently we use pause pods so that's OK. When we'll want to switch to Pods
@@ -3155,7 +3231,10 @@ func DeleteResourceAndWaitForGC(c clientset.Interface, kind schema.GroupKind, ns
 	terminatePodTime := time.Since(startTime) - deleteTime
 	Logf("Terminating %v %s pods took: %v", kind, name, terminatePodTime)
 
-	err = waitForPodsGone(ps, interval, 10*time.Minute)
+	// In gce, at any point, small percentage of nodes can disappear for
+	// ~10 minutes due to hostError. 20 minutes should be long enough to
+	// restart VM in that case and delete the pod.
+	err = waitForPodsGone(ps, interval, 20*time.Minute)
 	if err != nil {
 		return fmt.Errorf("error while waiting for pods gone %s: %v", name, err)
 	}
@@ -3167,25 +3246,48 @@ func DeleteResourceAndWaitForGC(c clientset.Interface, kind schema.GroupKind, ns
 // and DeleteRCAndWaitForGC, because the RC controller decreases status.replicas
 // when the pod is inactvie.
 func waitForPodsInactive(ps *testutils.PodStore, interval, timeout time.Duration) error {
-	return wait.PollImmediate(interval, timeout, func() (bool, error) {
+	var activePods []*v1.Pod
+	err := wait.PollImmediate(interval, timeout, func() (bool, error) {
 		pods := ps.List()
+		activePods = nil
 		for _, pod := range pods {
 			if controller.IsPodActive(pod) {
-				return false, nil
+				activePods = append(activePods, pod)
 			}
+		}
+
+		if len(activePods) != 0 {
+			return false, nil
 		}
 		return true, nil
 	})
+
+	if err == wait.ErrWaitTimeout {
+		for _, pod := range activePods {
+			Logf("ERROR: Pod %q running on %q is still active", pod.Name, pod.Spec.NodeName)
+		}
+		return fmt.Errorf("there are %d active pods. E.g. %q on node %q", len(activePods), activePods[0].Name, activePods[0].Spec.NodeName)
+	}
+	return err
 }
 
 // waitForPodsGone waits until there are no pods left in the PodStore.
 func waitForPodsGone(ps *testutils.PodStore, interval, timeout time.Duration) error {
-	return wait.PollImmediate(interval, timeout, func() (bool, error) {
-		if pods := ps.List(); len(pods) == 0 {
+	var pods []*v1.Pod
+	err := wait.PollImmediate(interval, timeout, func() (bool, error) {
+		if pods = ps.List(); len(pods) == 0 {
 			return true, nil
 		}
 		return false, nil
 	})
+
+	if err == wait.ErrWaitTimeout {
+		for _, pod := range pods {
+			Logf("ERROR: Pod %q still exists. Node: %q", pod.Name, pod.Spec.NodeName)
+		}
+		return fmt.Errorf("there are %d pods left. E.g. %q on node %q", len(pods), pods[0].Name, pods[0].Spec.NodeName)
+	}
+	return err
 }
 
 func WaitForPodsReady(c clientset.Interface, ns, name string, minReadySeconds int) error {
@@ -3271,10 +3373,6 @@ func NodeAddresses(nodelist *v1.NodeList, addrType v1.NodeAddressType) []string 
 	hosts := []string{}
 	for _, n := range nodelist.Items {
 		for _, addr := range n.Status.Addresses {
-			// Use the first external IP address we find on the node, and
-			// use at most one per node.
-			// TODO(roberthbailey): Use the "preferred" address for the node, once
-			// such a thing is defined (#2462).
 			if addr.Type == addrType {
 				hosts = append(hosts, addr.Address)
 				break
@@ -3284,19 +3382,29 @@ func NodeAddresses(nodelist *v1.NodeList, addrType v1.NodeAddressType) []string 
 	return hosts
 }
 
-// NodeSSHHosts returns SSH-able host names for all schedulable nodes - this excludes master node.
-// It returns an error if it can't find an external IP for every node, though it still returns all
-// hosts that it found in that case.
+// NodeSSHHosts returns SSH-able host names for all schedulable nodes - this
+// excludes master node. If it can't find any external IPs, it falls back to
+// looking for internal IPs. If it can't find an internal IP for every node it
+// returns an error, though it still returns all hosts that it found in that
+// case.
 func NodeSSHHosts(c clientset.Interface) ([]string, error) {
 	nodelist := waitListSchedulableNodesOrDie(c)
 
-	// TODO(roberthbailey): Use the "preferred" address for the node, once such a thing is defined (#2462).
 	hosts := NodeAddresses(nodelist, v1.NodeExternalIP)
+	// If ExternalIPs aren't set, assume the test programs can reach the
+	// InternalIP. Simplified exception logic here assumes that the hosts will
+	// either all have ExternalIP or none will. Simplifies handling here and
+	// should be adequate since the setting of the external IPs is provider
+	// specific: they should either all have them or none of them will.
+	if len(hosts) == 0 {
+		Logf("No external IP address on nodes, falling back to internal IPs")
+		hosts = NodeAddresses(nodelist, v1.NodeInternalIP)
+	}
 
-	// Error if any node didn't have an external IP.
+	// Error if any node didn't have an external/internal IP.
 	if len(hosts) != len(nodelist.Items) {
 		return hosts, fmt.Errorf(
-			"only found %d external IPs on nodes, but found %d nodes. Nodelist: %v",
+			"only found %d IPs on nodes, but found %d nodes. Nodelist: %v",
 			len(hosts), len(nodelist.Items), nodelist)
 	}
 
@@ -3387,8 +3495,8 @@ func IssueSSHCommandWithResult(cmd, provider string, node *v1.Node) (*SSHResult,
 	LogSSHResult(result)
 
 	if result.Code != 0 || err != nil {
-		return nil, fmt.Errorf("failed running %q: %v (exit code %d)",
-			cmd, err, result.Code)
+		return nil, fmt.Errorf("failed running %q: %v (exit code %d, stderr %v)",
+			cmd, err, result.Code, result.Stderr)
 	}
 
 	return &result, nil
@@ -3549,44 +3657,43 @@ func DeletePodOrFail(c clientset.Interface, ns, name string) {
 // GetSigner returns an ssh.Signer for the provider ("gce", etc.) that can be
 // used to SSH to their nodes.
 func GetSigner(provider string) (ssh.Signer, error) {
-	// Get the directory in which SSH keys are located.
-	keydir := filepath.Join(os.Getenv("HOME"), ".ssh")
-
 	// Select the key itself to use. When implementing more providers here,
 	// please also add them to any SSH tests that are disabled because of signer
 	// support.
 	keyfile := ""
-	key := ""
 	switch provider {
 	case "gce", "gke", "kubemark":
-		keyfile = "google_compute_engine"
-	case "aws":
-		// If there is an env. variable override, use that.
-		aws_keyfile := os.Getenv("AWS_SSH_KEY")
-		if len(aws_keyfile) != 0 {
-			return sshutil.MakePrivateKeySignerFromFile(aws_keyfile)
+		keyfile = os.Getenv("GCE_SSH_KEY")
+		if keyfile == "" {
+			keyfile = "google_compute_engine"
 		}
-		// Otherwise revert to home dir
-		keyfile = "kube_aws_rsa"
+	case "aws", "eks":
+		keyfile = os.Getenv("AWS_SSH_KEY")
+		if keyfile == "" {
+			keyfile = "kube_aws_rsa"
+		}
 	case "local", "vsphere":
-		keyfile = os.Getenv("LOCAL_SSH_KEY") // maybe?
-		if len(keyfile) == 0 {
+		keyfile = os.Getenv("LOCAL_SSH_KEY")
+		if keyfile == "" {
 			keyfile = "id_rsa"
 		}
 	case "skeleton":
 		keyfile = os.Getenv("KUBE_SSH_KEY")
-		if len(keyfile) == 0 {
+		if keyfile == "" {
 			keyfile = "id_rsa"
 		}
 	default:
 		return nil, fmt.Errorf("GetSigner(...) not implemented for %s", provider)
 	}
 
-	if len(key) == 0 {
-		key = filepath.Join(keydir, keyfile)
+	// Respect absolute paths for keys given by user, fallback to assuming
+	// relative paths are in ~/.ssh
+	if !filepath.IsAbs(keyfile) {
+		keydir := filepath.Join(os.Getenv("HOME"), ".ssh")
+		keyfile = filepath.Join(keydir, keyfile)
 	}
 
-	return sshutil.MakePrivateKeySignerFromFile(key)
+	return sshutil.MakePrivateKeySignerFromFile(keyfile)
 }
 
 // CheckPodsRunningReady returns whether all pods whose names are listed in
@@ -3895,7 +4002,7 @@ func ParseKVLines(output, key string) string {
 func RestartKubeProxy(host string) error {
 	// TODO: Make it work for all providers.
 	if !ProviderIs("gce", "gke", "aws") {
-		return fmt.Errorf("unsupported provider: %s", TestContext.Provider)
+		return fmt.Errorf("unsupported provider for RestartKubeProxy: %s", TestContext.Provider)
 	}
 	// kubelet will restart the kube-proxy since it's running in a static pod
 	Logf("Killing kube-proxy on node %v", host)
@@ -3932,7 +4039,7 @@ func RestartKubelet(host string) error {
 	// TODO: Make it work for all providers and distros.
 	supportedProviders := []string{"gce", "aws", "vsphere"}
 	if !ProviderIs(supportedProviders...) {
-		return fmt.Errorf("unsupported provider: %s, supported providers are: %v", TestContext.Provider, supportedProviders)
+		return fmt.Errorf("unsupported provider for RestartKubelet: %s, supported providers are: %v", TestContext.Provider, supportedProviders)
 	}
 	if ProviderIs("gce") && !NodeOSDistroIs("debian", "gci") {
 		return fmt.Errorf("unsupported node OS distro: %s", TestContext.NodeOSDistro)
@@ -3988,7 +4095,7 @@ func WaitForKubeletUp(host string) error {
 func RestartApiserver(cs clientset.Interface) error {
 	// TODO: Make it work for all providers.
 	if !ProviderIs("gce", "gke", "aws") {
-		return fmt.Errorf("unsupported provider: %s", TestContext.Provider)
+		return fmt.Errorf("unsupported provider for RestartApiserver: %s", TestContext.Provider)
 	}
 	if ProviderIs("gce", "aws") {
 		initialRestartCount, err := getApiserverRestartCount(cs)
@@ -4011,7 +4118,7 @@ func RestartApiserver(cs clientset.Interface) error {
 
 func sshRestartMaster() error {
 	if !ProviderIs("gce", "aws") {
-		return fmt.Errorf("unsupported provider: %s", TestContext.Provider)
+		return fmt.Errorf("unsupported provider for sshRestartMaster: %s", TestContext.Provider)
 	}
 	var command string
 	if ProviderIs("gce") {
@@ -4077,7 +4184,7 @@ func getApiserverRestartCount(c clientset.Interface) (int32, error) {
 func RestartControllerManager() error {
 	// TODO: Make it work for all providers and distros.
 	if !ProviderIs("gce", "aws") {
-		return fmt.Errorf("unsupported provider: %s", TestContext.Provider)
+		return fmt.Errorf("unsupported provider for RestartControllerManager: %s", TestContext.Provider)
 	}
 	if ProviderIs("gce") && !MasterOSDistroIs("gci") {
 		return fmt.Errorf("unsupported master OS distro: %s", TestContext.MasterOSDistro)
@@ -4270,13 +4377,13 @@ func (rt *extractRT) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // headersForConfig extracts any http client logic necessary for the provided
 // config.
-func headersForConfig(c *restclient.Config) (http.Header, error) {
+func headersForConfig(c *restclient.Config, url *url.URL) (http.Header, error) {
 	extract := &extractRT{}
 	rt, err := restclient.HTTPWrappersForConfig(c, extract)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := rt.RoundTrip(&http.Request{}); err != nil {
+	if _, err := rt.RoundTrip(&http.Request{URL: url}); err != nil {
 		return nil, err
 	}
 	return extract.Header, nil
@@ -4300,7 +4407,7 @@ func OpenWebSocketForURL(url *url.URL, config *restclient.Config, protocols []st
 			url.Host += ":80"
 		}
 	}
-	headers, err := headersForConfig(config)
+	headers, err := headersForConfig(config, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load http headers: %v", err)
 	}
@@ -4833,7 +4940,7 @@ func ListNamespaceEvents(c clientset.Interface, ns string) error {
 		return err
 	}
 	for _, event := range ls.Items {
-		glog.Infof("Event(%#v): type: '%v' reason: '%v' %v", event.InvolvedObject, event.Type, event.Reason, event.Message)
+		klog.Infof("Event(%#v): type: '%v' reason: '%v' %v", event.InvolvedObject, event.Type, event.Reason, event.Message)
 	}
 	return nil
 }
@@ -4872,7 +4979,7 @@ func (p *E2ETestNodePreparer) PrepareNodes() error {
 		sum += v.Count
 		for ; index < sum; index++ {
 			if err := testutils.DoPrepareNode(p.client, &nodes.Items[index], v.Strategy); err != nil {
-				glog.Errorf("Aborting node preparation: %v", err)
+				klog.Errorf("Aborting node preparation: %v", err)
 				return err
 			}
 			p.nodeToAppliedStrategy[nodes.Items[index].Name] = v.Strategy
@@ -4890,7 +4997,7 @@ func (p *E2ETestNodePreparer) CleanupNodes() error {
 		strategy, found := p.nodeToAppliedStrategy[name]
 		if found {
 			if err = testutils.DoCleanupNode(p.client, name, strategy); err != nil {
-				glog.Errorf("Skipping cleanup of Node: failed update of %v: %v", name, err)
+				klog.Errorf("Skipping cleanup of Node: failed update of %v: %v", name, err)
 				encounteredError = err
 			}
 		}
@@ -4928,19 +5035,28 @@ func getMaster(c clientset.Interface) Address {
 	return master
 }
 
-// GetMasterAddress returns the hostname/external IP/internal IP as appropriate for e2e tests on a particular provider
-// which is the address of the interface used for communication with the kubelet.
-func GetMasterAddress(c clientset.Interface) string {
+// GetAllMasterAddresses returns all IP addresses on which the kubelet can reach the master.
+// It may return internal and external IPs, even if we expect for
+// e.g. internal IPs to be used (issue #56787), so that we can be
+// sure to block the master fully during tests.
+func GetAllMasterAddresses(c clientset.Interface) []string {
 	master := getMaster(c)
+
+	ips := sets.NewString()
 	switch TestContext.Provider {
 	case "gce", "gke":
-		return master.externalIP
+		if master.externalIP != "" {
+			ips.Insert(master.externalIP)
+		}
+		if master.internalIP != "" {
+			ips.Insert(master.internalIP)
+		}
 	case "aws":
-		return awsMasterIP
+		ips.Insert(awsMasterIP)
 	default:
 		Failf("This test is not supported for provider %s and should be disabled", TestContext.Provider)
 	}
-	return ""
+	return ips.List()
 }
 
 // GetNodeExternalIP returns node external IP concatenated with port 22 for ssh
@@ -5196,4 +5312,39 @@ func GetClusterZones(c clientset.Interface) (sets.String, error) {
 		}
 	}
 	return zones, nil
+}
+
+// WaitForNodeHasTaintOrNot waits for a taint to be added/removed from the node until timeout occurs, whichever comes first.
+func WaitForNodeHasTaintOrNot(c clientset.Interface, nodeName string, taint *v1.Taint, wantTrue bool, timeout time.Duration) error {
+	if err := wait.PollImmediate(Poll, timeout, func() (bool, error) {
+		has, err := NodeHasTaint(c, nodeName, taint)
+		if err != nil {
+			return false, fmt.Errorf("failed to check taint %s on node %s or not", taint.ToString(), nodeName)
+		}
+		return has == wantTrue, nil
+	}); err != nil {
+		return fmt.Errorf("expect node %v to have taint = %v within %v: %v", nodeName, wantTrue, timeout, err)
+	}
+	return nil
+}
+
+// GetFileModeRegex returns a file mode related regex which should be matched by the mounttest pods' output.
+// If the given mask is nil, then the regex will contain the default OS file modes, which are 0644 for Linux and 0775 for Windows.
+func GetFileModeRegex(filePath string, mask *int32) string {
+	var (
+		linuxMask   int32
+		windowsMask int32
+	)
+	if mask == nil {
+		linuxMask = int32(0644)
+		windowsMask = int32(0775)
+	} else {
+		linuxMask = *mask
+		windowsMask = *mask
+	}
+
+	linuxOutput := fmt.Sprintf("mode of file \"%s\": %v", filePath, os.FileMode(linuxMask))
+	windowsOutput := fmt.Sprintf("mode of Windows file \"%v\": %s", filePath, os.FileMode(windowsMask))
+
+	return fmt.Sprintf("(%s|%s)", linuxOutput, windowsOutput)
 }

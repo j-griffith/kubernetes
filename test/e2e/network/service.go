@@ -27,7 +27,7 @@ import (
 
 	compute "google.golang.org/api/compute/v1"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -1274,7 +1274,7 @@ var _ = SIGDescribe("Services", func() {
 		By("Verifying pods for RC " + t.Name)
 		framework.ExpectNoError(framework.VerifyPods(t.Client, t.Namespace, t.Name, false, 1))
 
-		svcName := fmt.Sprintf("%v.%v.svc.cluster.local", serviceName, f.Namespace.Name)
+		svcName := fmt.Sprintf("%v.%v.svc.%v", serviceName, f.Namespace.Name, framework.TestContext.ClusterDNSDomain)
 		By("Waiting for endpoints of Service with DNS name " + svcName)
 
 		execPodName := framework.CreateExecPodOrFail(f.ClientSet, f.Namespace.Name, "execpod-", nil)
@@ -1585,7 +1585,7 @@ var _ = SIGDescribe("Services", func() {
 		svc = jig.WaitForLoadBalancerOrFail(namespace, serviceName, framework.LoadBalancerCreateTimeoutDefault)
 
 		hcName := gcecloud.MakeNodesHealthCheckName(clusterID)
-		hc, err := gceCloud.GetHttpHealthCheck(hcName)
+		hc, err := gceCloud.GetHTTPHealthCheck(hcName)
 		if err != nil {
 			framework.Failf("gceCloud.GetHttpHealthCheck(%q) = _, %v; want nil", hcName, err)
 		}
@@ -1593,7 +1593,7 @@ var _ = SIGDescribe("Services", func() {
 
 		By("modify the health check interval")
 		hc.CheckIntervalSec = gceHcCheckIntervalSeconds - 1
-		if err = gceCloud.UpdateHttpHealthCheck(hc); err != nil {
+		if err = gceCloud.UpdateHTTPHealthCheck(hc); err != nil {
 			framework.Failf("gcecloud.UpdateHttpHealthCheck(%#v) = %v; want nil", hc, err)
 		}
 
@@ -1608,7 +1608,7 @@ var _ = SIGDescribe("Services", func() {
 		By("health check should be reconciled")
 		pollInterval := framework.Poll * 10
 		if pollErr := wait.PollImmediate(pollInterval, framework.LoadBalancerCreateTimeoutDefault, func() (bool, error) {
-			hc, err := gceCloud.GetHttpHealthCheck(hcName)
+			hc, err := gceCloud.GetHTTPHealthCheck(hcName)
 			if err != nil {
 				framework.Logf("Failed to get HttpHealthCheck(%q): %v", hcName, err)
 				return false, err
@@ -1686,6 +1686,67 @@ var _ = SIGDescribe("Services", func() {
 		svc.Spec.Type = v1.ServiceTypeLoadBalancer
 		svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
 		execAffinityTestForLBService(f, cs, svc, true)
+	})
+
+	It("should implement service.kubernetes.io/service-proxy-name", func() {
+		// this test uses framework.NodeSSHHosts that does not work if a Node only reports LegacyHostIP
+		framework.SkipUnlessProviderIs(framework.ProvidersWithSSH...)
+		// this test does not work if the Node does not support SSH Key
+		framework.SkipUnlessSSHKeyPresent()
+
+		ns := f.Namespace.Name
+		numPods, servicePort := 3, defaultServeHostnameServicePort
+		serviceProxyNameLabels := map[string]string{"service.kubernetes.io/service-proxy-name": "foo-bar"}
+
+		// We will create 2 services to test creating services in both states and also dynamic updates
+		// svcDisabled: Created with the label, will always be disabled. We create this early and
+		//              test again late to make sure it never becomes available.
+		// svcToggled: Created without the label then the label is toggled verifying reachability at each step.
+
+		By("creating service-disabled in namespace " + ns)
+		svcDisabled := getServeHostnameService("service-disabled")
+		svcDisabled.ObjectMeta.Labels = serviceProxyNameLabels
+		_, svcDisabledIP, err := framework.StartServeHostnameService(cs, internalClientset, svcDisabled, ns, numPods)
+		Expect(err).NotTo(HaveOccurred())
+
+		By("creating service in namespace " + ns)
+		svcToggled := getServeHostnameService("service")
+		podToggledNames, svcToggledIP, err := framework.StartServeHostnameService(cs, internalClientset, svcToggled, ns, numPods)
+		Expect(err).NotTo(HaveOccurred())
+
+		jig := framework.NewServiceTestJig(cs, svcToggled.ObjectMeta.Name)
+
+		hosts, err := framework.NodeSSHHosts(cs)
+		Expect(err).NotTo(HaveOccurred())
+		if len(hosts) == 0 {
+			framework.Failf("No ssh-able nodes")
+		}
+		host := hosts[0]
+
+		By("verifying service is up")
+		framework.ExpectNoError(framework.VerifyServeHostnameServiceUp(cs, ns, host, podToggledNames, svcToggledIP, servicePort))
+
+		By("verifying service-disabled is not up")
+		framework.ExpectNoError(framework.VerifyServeHostnameServiceDown(cs, host, svcDisabledIP, servicePort))
+
+		By("adding service-proxy-name label")
+		jig.UpdateServiceOrFail(ns, svcToggled.ObjectMeta.Name, func(svc *v1.Service) {
+			svc.ObjectMeta.Labels = serviceProxyNameLabels
+		})
+
+		By("verifying service is not up")
+		framework.ExpectNoError(framework.VerifyServeHostnameServiceDown(cs, host, svcToggledIP, servicePort))
+
+		By("removing service-proxy-name annotation")
+		jig.UpdateServiceOrFail(ns, svcToggled.ObjectMeta.Name, func(svc *v1.Service) {
+			svc.ObjectMeta.Labels = nil
+		})
+
+		By("verifying service is up")
+		framework.ExpectNoError(framework.VerifyServeHostnameServiceUp(cs, ns, host, podToggledNames, svcToggledIP, servicePort))
+
+		By("verifying service-disabled is still not up")
+		framework.ExpectNoError(framework.VerifyServeHostnameServiceDown(cs, host, svcDisabledIP, servicePort))
 	})
 })
 
@@ -2111,6 +2172,8 @@ func execAffinityTestForLBService(f *framework.Framework, cs clientset.Interface
 	svc = jig.WaitForLoadBalancerOrFail(ns, serviceName, framework.LoadBalancerCreateTimeoutDefault)
 	jig.SanityCheckService(svc, v1.ServiceTypeLoadBalancer)
 	defer func() {
+		podNodePairs, err := framework.PodNodePairs(cs, ns)
+		framework.Logf("[pod,node] pairs: %+v; err: %v", podNodePairs, err)
 		framework.StopServeHostnameService(cs, ns, serviceName)
 		lb := cloudprovider.DefaultLoadBalancerName(svc)
 		framework.Logf("cleaning load balancer resource for %s", lb)

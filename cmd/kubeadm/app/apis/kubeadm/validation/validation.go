@@ -25,8 +25,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/pflag"
-
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -34,6 +34,7 @@ import (
 	bootstraputil "k8s.io/cluster-bootstrap/token/util"
 	"k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm"
 	kubeadmapiv1beta1 "k8s.io/kubernetes/cmd/kubeadm/app/apis/kubeadm/v1beta1"
+	kubeadmcmdoptions "k8s.io/kubernetes/cmd/kubeadm/app/cmd/options"
 	"k8s.io/kubernetes/cmd/kubeadm/app/componentconfigs"
 	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	"k8s.io/kubernetes/cmd/kubeadm/app/features"
@@ -48,7 +49,7 @@ func ValidateInitConfiguration(c *kubeadm.InitConfiguration) field.ErrorList {
 	allErrs = append(allErrs, ValidateNodeRegistrationOptions(&c.NodeRegistration, field.NewPath("nodeRegistration"))...)
 	allErrs = append(allErrs, ValidateBootstrapTokens(c.BootstrapTokens, field.NewPath("bootstrapTokens"))...)
 	allErrs = append(allErrs, ValidateClusterConfiguration(&c.ClusterConfiguration)...)
-	allErrs = append(allErrs, ValidateAPIEndpoint(&c.APIEndpoint, field.NewPath("apiEndpoint"))...)
+	allErrs = append(allErrs, ValidateAPIEndpoint(&c.LocalAPIEndpoint, field.NewPath("localAPIEndpoint"))...)
 	return allErrs
 }
 
@@ -56,7 +57,7 @@ func ValidateInitConfiguration(c *kubeadm.InitConfiguration) field.ErrorList {
 func ValidateClusterConfiguration(c *kubeadm.ClusterConfiguration) field.ErrorList {
 	allErrs := field.ErrorList{}
 	allErrs = append(allErrs, ValidateNetworking(&c.Networking, field.NewPath("networking"))...)
-	allErrs = append(allErrs, ValidateCertSANs(c.APIServerCertSANs, field.NewPath("apiServerCertSANs"))...)
+	allErrs = append(allErrs, ValidateAPIServer(&c.APIServer, field.NewPath("apiServer"))...)
 	allErrs = append(allErrs, ValidateAbsolutePath(c.CertificatesDir, field.NewPath("certificatesDir"))...)
 	allErrs = append(allErrs, ValidateFeatureGates(c.FeatureGates, field.NewPath("featureGates"))...)
 	allErrs = append(allErrs, ValidateHostPort(c.ControlPlaneEndpoint, field.NewPath("controlPlaneEndpoint"))...)
@@ -65,15 +66,31 @@ func ValidateClusterConfiguration(c *kubeadm.ClusterConfiguration) field.ErrorLi
 	return allErrs
 }
 
+// ValidateAPIServer validates a APIServer object and collects all encountered errors
+func ValidateAPIServer(a *kubeadm.APIServer, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	allErrs = append(allErrs, ValidateCertSANs(a.CertSANs, fldPath.Child("certSANs"))...)
+	return allErrs
+}
+
 // ValidateJoinConfiguration validates node configuration and collects all encountered errors
 func ValidateJoinConfiguration(c *kubeadm.JoinConfiguration) field.ErrorList {
 	allErrs := field.ErrorList{}
 	allErrs = append(allErrs, ValidateDiscovery(&c.Discovery, field.NewPath("discovery"))...)
 	allErrs = append(allErrs, ValidateNodeRegistrationOptions(&c.NodeRegistration, field.NewPath("nodeRegistration"))...)
-	allErrs = append(allErrs, ValidateAPIEndpoint(&c.APIEndpoint, field.NewPath("apiEndpoint"))...)
+	allErrs = append(allErrs, ValidateJoinControlPlane(c.ControlPlane, field.NewPath("controlPlane"))...)
 
 	if !filepath.IsAbs(c.CACertPath) || !strings.HasSuffix(c.CACertPath, ".crt") {
 		allErrs = append(allErrs, field.Invalid(field.NewPath("caCertPath"), c.CACertPath, "the ca certificate path must be an absolute path"))
+	}
+	return allErrs
+}
+
+// ValidateJoinControlPlane validates joining control plane configuration and collects all encountered errors
+func ValidateJoinControlPlane(c *kubeadm.JoinControlPlane, fldPath *field.Path) field.ErrorList {
+	allErrs := field.ErrorList{}
+	if c != nil {
+		allErrs = append(allErrs, ValidateAPIEndpoint(&c.LocalAPIEndpoint, fldPath.Child("localAPIEndpoint"))...)
 	}
 	return allErrs
 }
@@ -122,21 +139,16 @@ func ValidateDiscovery(d *kubeadm.Discovery, fldPath *field.Path) field.ErrorLis
 func ValidateDiscoveryBootstrapToken(b *kubeadm.BootstrapTokenDiscovery, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	if len(b.APIServerEndpoints) < 1 {
-		allErrs = append(allErrs, field.Required(fldPath, "APIServerEndpoints not set"))
-	}
-
-	// TODO remove once we support multiple api servers
-	if len(b.APIServerEndpoints) > 1 {
-		fmt.Println("[validation] WARNING: kubeadm doesn't fully support multiple API Servers yet")
+	if len(b.APIServerEndpoint) == 0 {
+		allErrs = append(allErrs, field.Required(fldPath, "APIServerEndpoint is not set"))
 	}
 
 	if len(b.CACertHashes) == 0 && !b.UnsafeSkipCAVerification {
 		allErrs = append(allErrs, field.Invalid(fldPath, "", "using token-based discovery without caCertHashes can be unsafe. Set unsafeSkipCAVerification to continue"))
 	}
 
-	allErrs = append(allErrs, ValidateToken(b.Token, fldPath.Child("token"))...)
-	allErrs = append(allErrs, ValidateDiscoveryTokenAPIServer(b.APIServerEndpoints, fldPath.Child("apiServerEndpoints"))...)
+	allErrs = append(allErrs, ValidateToken(b.Token, fldPath.Child(kubeadmcmdoptions.TokenStr))...)
+	allErrs = append(allErrs, ValidateDiscoveryTokenAPIServer(b.APIServerEndpoint, fldPath.Child("apiServerEndpoints"))...)
 
 	return allErrs
 }
@@ -151,13 +163,11 @@ func ValidateDiscoveryFile(f *kubeadm.FileDiscovery, fldPath *field.Path) field.
 }
 
 // ValidateDiscoveryTokenAPIServer validates discovery token for API server
-func ValidateDiscoveryTokenAPIServer(apiServers []string, fldPath *field.Path) field.ErrorList {
+func ValidateDiscoveryTokenAPIServer(apiServer string, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
-	for _, m := range apiServers {
-		_, _, err := net.SplitHostPort(m)
-		if err != nil {
-			allErrs = append(allErrs, field.Invalid(fldPath, m, err.Error()))
-		}
+	_, _, err := net.SplitHostPort(apiServer)
+	if err != nil {
+		allErrs = append(allErrs, field.Invalid(fldPath, apiServer, err.Error()))
 	}
 	return allErrs
 }
@@ -190,9 +200,9 @@ func ValidateBootstrapTokens(bts []kubeadm.BootstrapToken, fldPath *field.Path) 
 	allErrs := field.ErrorList{}
 	for i, bt := range bts {
 		btPath := fldPath.Child(fmt.Sprintf("%d", i))
-		allErrs = append(allErrs, ValidateToken(bt.Token.String(), btPath.Child("token"))...)
-		allErrs = append(allErrs, ValidateTokenUsages(bt.Usages, btPath.Child("usages"))...)
-		allErrs = append(allErrs, ValidateTokenGroups(bt.Usages, bt.Groups, btPath.Child("groups"))...)
+		allErrs = append(allErrs, ValidateToken(bt.Token.String(), btPath.Child(kubeadmcmdoptions.TokenStr))...)
+		allErrs = append(allErrs, ValidateTokenUsages(bt.Usages, btPath.Child(kubeadmcmdoptions.TokenUsages))...)
+		allErrs = append(allErrs, ValidateTokenGroups(bt.Usages, bt.Groups, btPath.Child(kubeadmcmdoptions.TokenGroups))...)
 
 		if bt.Expires != nil && bt.TTL != nil {
 			allErrs = append(allErrs, field.Invalid(btPath, "", "the BootstrapToken .TTL and .Expires fields are mutually exclusive"))
@@ -390,7 +400,7 @@ func ValidateMixedArguments(flag *pflag.FlagSet) error {
 
 	mixedInvalidFlags := []string{}
 	flag.Visit(func(f *pflag.Flag) {
-		if f.Name == "config" || f.Name == "ignore-preflight-errors" || strings.HasPrefix(f.Name, "skip-") || f.Name == "dry-run" || f.Name == "kubeconfig" || f.Name == "v" || f.Name == "rootfs" || f.Name == "print-join-command" {
+		if f.Name == "config" || f.Name == "ignore-preflight-errors" || strings.HasPrefix(f.Name, "skip-") || f.Name == "dry-run" || f.Name == "kubeconfig" || f.Name == "v" || f.Name == "rootfs" || f.Name == "print-join-command" || f.Name == "node-name" || f.Name == "cri-socket" {
 			// "--skip-*" flags or other whitelisted flags can be set with --config
 			return
 		}
@@ -398,7 +408,7 @@ func ValidateMixedArguments(flag *pflag.FlagSet) error {
 	})
 
 	if len(mixedInvalidFlags) != 0 {
-		return fmt.Errorf("can not mix '--config' with arguments %v", mixedInvalidFlags)
+		return errors.Errorf("can not mix '--config' with arguments %v", mixedInvalidFlags)
 	}
 	return nil
 }
@@ -406,13 +416,12 @@ func ValidateMixedArguments(flag *pflag.FlagSet) error {
 // ValidateFeatureGates validates provided feature gates
 func ValidateFeatureGates(featureGates map[string]bool, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
-	validFeatures := features.Keys(features.InitFeatureGates)
 
 	// check valid feature names are provided
 	for k := range featureGates {
 		if !features.Supports(features.InitFeatureGates, k) {
 			allErrs = append(allErrs, field.Invalid(fldPath, featureGates,
-				fmt.Sprintf("%s is not a valid feature name. Valid features are: %s", k, validFeatures)))
+				fmt.Sprintf("%s is not a valid feature name.", k)))
 		}
 	}
 

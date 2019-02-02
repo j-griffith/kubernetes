@@ -17,12 +17,14 @@ limitations under the License.
 package config
 
 import (
-	"fmt"
+	"bytes"
 	"io/ioutil"
 	"net"
+	"reflect"
 	"strings"
 
-	"github.com/golang/glog"
+	"github.com/pkg/errors"
+	"k8s.io/klog"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	netutil "k8s.io/apimachinery/pkg/util/net"
@@ -33,28 +35,6 @@ import (
 	"k8s.io/kubernetes/cmd/kubeadm/app/constants"
 	kubeadmutil "k8s.io/kubernetes/cmd/kubeadm/app/util"
 )
-
-// AnyConfigFileAndDefaultsToInternal reads either a InitConfiguration or JoinConfiguration and unmarshals it
-func AnyConfigFileAndDefaultsToInternal(cfgPath string) (runtime.Object, error) {
-	b, err := ioutil.ReadFile(cfgPath)
-	if err != nil {
-		return nil, err
-	}
-
-	gvks, err := kubeadmutil.GroupVersionKindsFromBytes(b)
-	if err != nil {
-		return nil, err
-	}
-
-	// First, check if the gvk list has InitConfiguration and in that case try to unmarshal it
-	if kubeadmutil.GroupVersionKindsHasInitConfiguration(gvks...) {
-		return ConfigFileAndDefaultsToInternalConfig(cfgPath, &kubeadmapiv1beta1.InitConfiguration{})
-	}
-	if kubeadmutil.GroupVersionKindsHasJoinConfiguration(gvks...) {
-		return JoinConfigFileAndDefaultsToInternalConfig(cfgPath, &kubeadmapiv1beta1.JoinConfiguration{})
-	}
-	return nil, fmt.Errorf("didn't recognize types with GroupVersionKind: %v", gvks)
-}
 
 // MarshalKubeadmConfigObject marshals an Object registered in the kubeadm scheme. If the object is a InitConfiguration or ClusterConfiguration, some extra logic is run
 func MarshalKubeadmConfigObject(obj runtime.Object) ([]byte, error) {
@@ -89,7 +69,7 @@ func DetectUnsupportedVersion(b []byte) error {
 	knownKinds := map[string]bool{}
 	for _, gvk := range gvks {
 		if useKubeadmVersion := oldKnownAPIVersions[gvk.GroupVersion().String()]; len(useKubeadmVersion) != 0 {
-			return fmt.Errorf("your configuration file uses an old API spec: %q. Please use kubeadm %s instead and run 'kubeadm config migrate --old-config old.yaml --new-config new.yaml', which will write the new, similar spec using a newer API version.", gvk.GroupVersion().String(), useKubeadmVersion)
+			return errors.Errorf("your configuration file uses an old API spec: %q. Please use kubeadm %s instead and run 'kubeadm config migrate --old-config old.yaml --new-config new.yaml', which will write the new, similar spec using a newer API version.", gvk.GroupVersion().String(), useKubeadmVersion)
 		}
 		knownKinds[gvk.Kind] = true
 	}
@@ -103,7 +83,7 @@ func DetectUnsupportedVersion(b []byte) error {
 		}
 	}
 	if mutuallyExclusiveCount > 1 {
-		glog.Warningf("WARNING: Detected resource kinds that may not apply: %v", mutuallyExclusive)
+		klog.Warningf("WARNING: Detected resource kinds that may not apply: %v", mutuallyExclusive)
 	}
 
 	return nil
@@ -128,10 +108,10 @@ func NormalizeKubernetesVersion(cfg *kubeadmapi.ClusterConfiguration) error {
 	// Parse the given kubernetes version and make sure it's higher than the lowest supported
 	k8sVersion, err := version.ParseSemantic(cfg.KubernetesVersion)
 	if err != nil {
-		return fmt.Errorf("couldn't parse kubernetes version %q: %v", cfg.KubernetesVersion, err)
+		return errors.Wrapf(err, "couldn't parse Kubernetes version %q", cfg.KubernetesVersion)
 	}
 	if k8sVersion.LessThan(constants.MinimumControlPlaneVersion) {
-		return fmt.Errorf("this version of kubeadm only supports deploying clusters with the control plane version >= %s. Current version: %s", constants.MinimumControlPlaneVersion.String(), cfg.KubernetesVersion)
+		return errors.Errorf("this version of kubeadm only supports deploying clusters with the control plane version >= %s. Current version: %s", constants.MinimumControlPlaneVersion.String(), cfg.KubernetesVersion)
 	}
 	return nil
 }
@@ -141,7 +121,7 @@ func LowercaseSANs(sans []string) {
 	for i, san := range sans {
 		lowercase := strings.ToLower(san)
 		if lowercase != san {
-			glog.V(1).Infof("lowercasing SAN %q to %q", san, lowercase)
+			klog.V(1).Infof("lowercasing SAN %q to %q", san, lowercase)
 			sans[i] = lowercase
 		}
 	}
@@ -152,10 +132,10 @@ func LowercaseSANs(sans []string) {
 func VerifyAPIServerBindAddress(address string) error {
 	ip := net.ParseIP(address)
 	if ip == nil {
-		return fmt.Errorf("cannot parse IP address: %s", address)
+		return errors.Errorf("cannot parse IP address: %s", address)
 	}
 	if !ip.IsGlobalUnicast() {
-		return fmt.Errorf("cannot use %q as the bind address for the API Server", address)
+		return errors.Errorf("cannot use %q as the bind address for the API Server", address)
 	}
 	return nil
 }
@@ -166,14 +146,60 @@ func ChooseAPIServerBindAddress(bindAddress net.IP) (net.IP, error) {
 	ip, err := netutil.ChooseBindAddress(bindAddress)
 	if err != nil {
 		if netutil.IsNoRoutesError(err) {
-			glog.Warningf("WARNING: could not obtain a bind address for the API Server: %v; using: %s", err, constants.DefaultAPIServerBindAddress)
+			klog.Warningf("WARNING: could not obtain a bind address for the API Server: %v; using: %s", err, constants.DefaultAPIServerBindAddress)
 			defaultIP := net.ParseIP(constants.DefaultAPIServerBindAddress)
 			if defaultIP == nil {
-				return nil, fmt.Errorf("cannot parse default IP address: %s", constants.DefaultAPIServerBindAddress)
+				return nil, errors.Errorf("cannot parse default IP address: %s", constants.DefaultAPIServerBindAddress)
 			}
 			return defaultIP, nil
 		}
 		return nil, err
 	}
+	if bindAddress != nil && !bindAddress.IsUnspecified() && !reflect.DeepEqual(ip, bindAddress) {
+		klog.Warningf("WARNING: overriding requested API server bind address: requested %q, actual %q", bindAddress, ip)
+	}
 	return ip, nil
+}
+
+// MigrateOldConfigFromFile migrates an old configuration from a file into a new one (returned as a byte slice). Only kubeadm kinds are migrated. Others are silently ignored.
+func MigrateOldConfigFromFile(cfgPath string) ([]byte, error) {
+	newConfig := [][]byte{}
+
+	cfgBytes, err := ioutil.ReadFile(cfgPath)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	gvks, err := kubeadmutil.GroupVersionKindsFromBytes(cfgBytes)
+	if err != nil {
+		return []byte{}, err
+	}
+
+	// Migrate InitConfiguration and ClusterConfiguration if there are any in the config
+	if kubeadmutil.GroupVersionKindsHasInitConfiguration(gvks...) || kubeadmutil.GroupVersionKindsHasClusterConfiguration(gvks...) {
+		o, err := ConfigFileAndDefaultsToInternalConfig(cfgPath, &kubeadmapiv1beta1.InitConfiguration{})
+		if err != nil {
+			return []byte{}, err
+		}
+		b, err := MarshalKubeadmConfigObject(o)
+		if err != nil {
+			return []byte{}, err
+		}
+		newConfig = append(newConfig, b)
+	}
+
+	// Migrate JoinConfiguration if there is any
+	if kubeadmutil.GroupVersionKindsHasJoinConfiguration(gvks...) {
+		o, err := JoinConfigFileAndDefaultsToInternalConfig(cfgPath, &kubeadmapiv1beta1.JoinConfiguration{})
+		if err != nil {
+			return []byte{}, err
+		}
+		b, err := MarshalKubeadmConfigObject(o)
+		if err != nil {
+			return []byte{}, err
+		}
+		newConfig = append(newConfig, b)
+	}
+
+	return bytes.Join(newConfig, []byte(constants.YAMLDocumentSeparator)), nil
 }

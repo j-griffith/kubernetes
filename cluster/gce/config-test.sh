@@ -53,6 +53,10 @@ NODE_LOCAL_SSDS_EXT=${NODE_LOCAL_SSDS_EXT:-}
 NODE_ACCELERATORS=${NODE_ACCELERATORS:-""}
 REGISTER_MASTER_KUBELET=${REGISTER_MASTER:-true}
 KUBE_APISERVER_REQUEST_TIMEOUT=300
+# Increase initial delay for the apiserver liveness probe, to avoid prematurely tearing it down
+KUBE_APISERVER_LIVENESS_PROBE_INITIAL_DELAY_SEC=${KUBE_APISERVER_LIVENESS_PROBE_INITIAL_DELAY_SEC:-45}
+# Also increase the initial delay for etcd just to be safe
+ETCD_LIVENESS_PROBE_INITIAL_DELAY_SEC=${ETCD_LIVENESS_PROBE_INITIAL_DELAY_SEC:-45}
 PREEMPTIBLE_NODE=${PREEMPTIBLE_NODE:-false}
 PREEMPTIBLE_MASTER=${PREEMPTIBLE_MASTER:-false}
 KUBE_DELETE_NODES=${KUBE_DELETE_NODES:-true}
@@ -173,7 +177,7 @@ ENABLE_METADATA_AGENT="${KUBE_ENABLE_METADATA_AGENT:-none}"
 # Useful for scheduling heapster in large clusters with nodes of small size.
 HEAPSTER_MACHINE_TYPE="${HEAPSTER_MACHINE_TYPE:-}"
 
-# Set etcd image (e.g. k8s.gcr.io/etcd) and version (e.g. 3.2.24-1) if you need
+# Set etcd image (e.g. k8s.gcr.io/etcd) and version (e.g. 3.3.10-0) if you need
 # non-default version.
 ETCD_IMAGE="${TEST_ETCD_IMAGE:-}"
 ETCD_DOCKER_REPOSITORY="${TEST_ETCD_DOCKER_REPOSITORY:-}"
@@ -230,6 +234,8 @@ if [[ ${ENABLE_NETD:-} == "true" ]]; then
 	NON_MASTER_NODE_LABELS="${NON_MASTER_NODE_LABELS:+${NON_MASTER_NODE_LABELS},}cloud.google.com/gke-netd-ready=true"
 fi
 
+ENABLE_NODELOCAL_DNS="${KUBE_ENABLE_NODELOCAL_DNS:-false}"
+
 # To avoid running Calico on a node that is not configured appropriately,
 # label each Node so that the DaemonSet can run the Pods only on ready Nodes.
 if [[ ${NETWORK_POLICY_PROVIDER:-} == "calico" ]]; then
@@ -272,6 +278,7 @@ fi
 CLUSTER_DNS_CORE_DNS="${CLUSTER_DNS_CORE_DNS:-true}"
 ENABLE_CLUSTER_DNS="${KUBE_ENABLE_CLUSTER_DNS:-true}"
 DNS_SERVER_IP="10.0.0.10"
+LOCAL_DNS_IP="${KUBE_LOCAL_DNS_IP:-169.254.20.10}"
 DNS_DOMAIN="cluster.local"
 
 # Optional: Enable DNS horizontal autoscaler
@@ -418,8 +425,8 @@ fi
 
 # Fluentd requirements
 # YAML exists to trigger a configuration refresh when changes are made.
-FLUENTD_GCP_YAML_VERSION="v3.1.0"
-FLUENTD_GCP_VERSION="${FLUENTD_GCP_VERSION:-0.5-1.5.36-1-k8s}"
+FLUENTD_GCP_YAML_VERSION="v3.2.0"
+FLUENTD_GCP_VERSION="${FLUENTD_GCP_VERSION:-0.6-1.6.0-1}"
 FLUENTD_GCP_MEMORY_LIMIT="${FLUENTD_GCP_MEMORY_LIMIT:-}"
 FLUENTD_GCP_CPU_REQUEST="${FLUENTD_GCP_CPU_REQUEST:-}"
 FLUENTD_GCP_MEMORY_REQUEST="${FLUENTD_GCP_MEMORY_REQUEST:-}"
@@ -470,11 +477,7 @@ ROTATE_CERTIFICATES="${ROTATE_CERTIFICATES:-}"
 # into kube-controller-manager via `--concurrent-service-syncs`
 CONCURRENT_SERVICE_SYNCS="${CONCURRENT_SERVICE_SYNCS:-}"
 
-if [[ "${ENABLE_TOKENREQUEST:-}" == "true" ]]; then
-  FEATURE_GATES="${FEATURE_GATES},TokenRequest=true"
-  SERVICEACCOUNT_ISSUER="https://kubernetes.io/${CLUSTER_NAME}"
-  SERVICEACCOUNT_API_AUDIENCES="https://kubernetes.default.svc"
-fi
+SERVICEACCOUNT_ISSUER="https://kubernetes.io/${CLUSTER_NAME}"
 
 # Optional: Enable Node termination Handler for Preemptible and GPU VMs.
 # https://github.com/GoogleCloudPlatform/k8s-node-termination-handler

@@ -25,7 +25,7 @@ go_library(
         "//pkg/scheduler/algorithm:go_default_library",
         "//pkg/scheduler/algorithm/priorities/util:go_default_library",
         "//pkg/scheduler/api:go_default_library",
-        "//pkg/scheduler/cache:go_default_library",
+        "//pkg/scheduler/nodeinfo:go_default_library",
         "//pkg/scheduler/util:go_default_library",
         "//pkg/scheduler/volumebinder:go_default_library",
         "//pkg/volume/util:go_default_library",
@@ -41,7 +41,7 @@ go_library(
         "//staging/src/k8s.io/client-go/listers/core/v1:go_default_library",
         "//staging/src/k8s.io/client-go/listers/storage/v1:go_default_library",
         "//staging/src/k8s.io/client-go/util/workqueue:go_default_library",
-        "//vendor/github.com/golang/glog:go_default_library",
+        "//vendor/k8s.io/klog:go_default_library",
     ],
 )
 
@@ -59,9 +59,8 @@ go_test(
         "//pkg/apis/core/v1/helper:go_default_library",
         "//pkg/features:go_default_library",
         "//pkg/kubelet/apis:go_default_library",
-        "//pkg/scheduler/algorithm:go_default_library",
         "//pkg/scheduler/api:go_default_library",
-        "//pkg/scheduler/cache:go_default_library",
+        "//pkg/scheduler/nodeinfo:go_default_library",
         "//pkg/scheduler/testing:go_default_library",
         "//pkg/volume/util:go_default_library",
         "//staging/src/k8s.io/api/core/v1:go_default_library",

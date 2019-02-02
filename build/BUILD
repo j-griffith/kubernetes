@@ -2,6 +2,11 @@ package(default_visibility = ["//visibility:public"])
 
 load("@io_bazel_rules_docker//container:container.bzl", "container_bundle", "container_image")
 load("@io_kubernetes_build//defs:build.bzl", "release_filegroup")
+load(":code_generation_test.bzl", "code_generation_test_suite")
+
+code_generation_test_suite(
+    name = "code_generation_tests",
+)
 
 filegroup(
     name = "package-srcs",
@@ -21,32 +26,23 @@ filegroup(
     tags = ["automanaged"],
 )
 
-# ensure /etc/nsswitch.conf exists so go's resolver respects /etc/hosts
-container_image(
-    name = "busybox-with-nsswitch",
-    base = "@official_busybox//image",
-    directory = "/etc",
-    files = ["nsswitch.conf"],
-    mode = "0644",
-)
-
 # This list should roughly match kube::build::get_docker_wrapped_binaries()
 # in build/common.sh.
 DOCKERIZED_BINARIES = {
     "cloud-controller-manager": {
-        "base": ":busybox-with-nsswitch",
+        "base": "@debian-base-amd64//image",
         "target": "//cmd/cloud-controller-manager:cloud-controller-manager",
     },
     "kube-apiserver": {
-        "base": ":busybox-with-nsswitch",
+        "base": "@debian-base-amd64//image",
         "target": "//cmd/kube-apiserver:kube-apiserver",
     },
     "kube-controller-manager": {
-        "base": ":busybox-with-nsswitch",
+        "base": "@debian-base-amd64//image",
         "target": "//cmd/kube-controller-manager:kube-controller-manager",
     },
     "kube-scheduler": {
-        "base": ":busybox-with-nsswitch",
+        "base": "@debian-base-amd64//image",
         "target": "//cmd/kube-scheduler:kube-scheduler",
     },
     "kube-proxy": {
@@ -96,12 +92,6 @@ grep ^STABLE_BUILD_SCM_REVISION bazel-out/stable-status.txt \
     >$@
 """,
     stamp = 1,
-)
-
-genrule(
-    name = "cni_package_version",
-    outs = ["cni_version"],
-    cmd = "echo 0.5.1 >$@",
 )
 
 release_filegroup(

@@ -27,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 
 	sets "k8s.io/apimachinery/pkg/util/sets"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/kubernetes/fake"
 	core "k8s.io/client-go/testing"
 	kubeletapis "k8s.io/kubernetes/pkg/kubelet/apis"
@@ -449,8 +448,6 @@ func TestCreatePatch(t *testing.T) {
 		},
 	}
 
-	utilfeature.DefaultFeatureGate.Set("VolumeScheduling=true")
-	defer utilfeature.DefaultFeatureGate.Set("VolumeScheduling=false")
 	for d, tc := range testCases {
 		cloud := &fakecloud.FakeCloud{}
 		client := fake.NewSimpleClientset()
@@ -518,9 +515,6 @@ func TestAddLabelsToVolume(t *testing.T) {
 			shouldLabelAndSetAffinity: false,
 		},
 	}
-
-	utilfeature.DefaultFeatureGate.Set("VolumeScheduling=true")
-	defer utilfeature.DefaultFeatureGate.Set("VolumeScheduling=false")
 
 	for d, tc := range testCases {
 		labeledCh := make(chan bool, 1)
