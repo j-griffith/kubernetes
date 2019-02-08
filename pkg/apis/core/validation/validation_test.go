@@ -713,28 +713,6 @@ func testVolumeSnapshotDataSourceInSpec(name string, kind string, apiGroup strin
 	return &dataSourceInSpec
 }
 
-func TestAlphaVolumeSnapshotDataSource(t *testing.T) {
-	successTestCases := []core.PersistentVolumeClaimSpec{
-		*testVolumeSnapshotDataSourceInSpec("test_snapshot", "VolumeSnapshot", "snapshot.storage.k8s.io"),
-	}
-	failedTestCases := []core.PersistentVolumeClaimSpec{
-		*testVolumeSnapshotDataSourceInSpec("", "VolumeSnapshot", "snapshot.storage.k8s.io"),
-		*testVolumeSnapshotDataSourceInSpec("test_snapshot", "PersistentVolumeClaim", "snapshot.storage.k8s.io"),
-		*testVolumeSnapshotDataSourceInSpec("test_snapshot", "VolumeSnapshot", "storage.k8s.io"),
-	}
-
-	for _, tc := range successTestCases {
-		if errs := ValidatePersistentVolumeClaimSpec(&tc, field.NewPath("spec")); len(errs) != 0 {
-			t.Errorf("expected success: %v", errs)
-		}
-	}
-	for _, tc := range failedTestCases {
-		if errs := ValidatePersistentVolumeClaimSpec(&tc, field.NewPath("spec")); len(errs) == 0 {
-			t.Errorf("expected failure: %v", errs)
-		}
-	}
-}
-
 func testVolumeClaimStorageClassInAnnotationAndSpec(name, namespace, scNameInAnn, scName string, spec core.PersistentVolumeClaimSpec) *core.PersistentVolumeClaim {
 	spec.StorageClassName = &scName
 	return &core.PersistentVolumeClaim{
@@ -12913,4 +12891,49 @@ func TestValidateOrSetClientIPAffinityConfig(t *testing.T) {
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func testDataSourceInSpec(name string, kind string, apiGroup string) *core.PersistentVolumeClaimSpec {
+	scName := "csi-plugin"
+	dataSourceInSpec := core.PersistentVolumeClaimSpec{
+		AccessModes: []core.PersistentVolumeAccessMode{
+			core.ReadOnlyMany,
+		},
+		Resources: core.ResourceRequirements{
+			Requests: core.ResourceList{
+				core.ResourceName(core.ResourceStorage): resource.MustParse("10G"),
+			},
+		},
+		StorageClassName: &scName,
+		DataSource: &core.TypedLocalObjectReference{
+			APIGroup: &apiGroup,
+			Kind:     kind,
+			Name:     name,
+		},
+	}
+
+	return &dataSourceInSpec
+}
+
+func TestAlphaVolumeDataSource(t *testing.T) {
+	successTestCases := []core.PersistentVolumeClaimSpec{
+		*testDataSourceInSpec("test_snapshot", "VolumeSnapshot", "snapshot.storage.k8s.io"),
+		*testDataSourceInSpec("test_pvc", "PersistentVolumeClaim", ""),
+	}
+	failedTestCases := []core.PersistentVolumeClaimSpec{
+		*testDataSourceInSpec("", "VolumeSnapshot", "snapshot.storage.k8s.io"),
+		*testDataSourceInSpec("test_snapshot", "PersistentVolumeClaim", "snapshot.storage.k8s.io"),
+		*testDataSourceInSpec("test_snapshot", "VolumeSnapshot", "storage.k8s.io"),
+	}
+
+	for _, tc := range successTestCases {
+		if errs := ValidatePersistentVolumeClaimSpec(&tc, field.NewPath("spec")); len(errs) != 0 {
+			t.Errorf("expected success: %v", errs)
+		}
+	}
+	for _, tc := range failedTestCases {
+		if errs := ValidatePersistentVolumeClaimSpec(&tc, field.NewPath("spec")); len(errs) == 0 {
+			t.Errorf("expected failure: %v", errs)
+		}
+	}
 }
