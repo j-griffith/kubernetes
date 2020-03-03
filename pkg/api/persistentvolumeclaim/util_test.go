@@ -167,36 +167,15 @@ func TestPVCDataSourceSpecFilter(t *testing.T) {
 			gateEnabled: true,
 			want:        validSpec.DataSource,
 		},
-		"disabled with invalid spec": {
-			spec:        invalidSpec,
-			gateEnabled: false,
-			want:        nil,
-		},
-		"disabled with valid spec": {
-			spec:        validSpec,
-			gateEnabled: false,
-			want:        nil,
-		},
-		"diabled with empty ds": {
-			spec:        core.PersistentVolumeClaimSpec{},
-			gateEnabled: false,
-			want:        nil,
-		},
 		"enabled with valid spec but nil APIGroup": {
 			spec:        validSpecNilAPIGroup,
 			gateEnabled: true,
 			want:        validSpecNilAPIGroup.DataSource,
 		},
-		"disabled with valid spec but nil APIGroup": {
-			spec:        validSpecNilAPIGroup,
-			gateEnabled: false,
-			want:        nil,
-		},
 	}
 
 	for testName, test := range tests {
 		t.Run(testName, func(t *testing.T) {
-			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.VolumePVCDataSource, test.gateEnabled)()
 			DropDisabledFields(&test.spec, nil)
 			if test.spec.DataSource != test.want {
 				t.Errorf("expected drop datasource condition was not met, test: %s, gateEnabled: %v, spec: %v, expected: %v", testName, test.gateEnabled, test.spec, test.want)
